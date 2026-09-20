@@ -13,7 +13,8 @@ services:
       # 容器内进程的属主，由安装向导收集后写进 .env。
       # 不设或设成 0 就是以 root 跑，切出来的切片属主会是 root，NAS 文件管理里不好操作。
       PUID: ${PUID:-1000}
-      PGID: ${PGID:-1000}
+      # 飞牛上 admin 的 gid 是 1001（Users 组），不是 1000
+      PGID: ${PGID:-1001}
       UMASK: "022"
       VS_LOG_LEVEL: info
     volumes:

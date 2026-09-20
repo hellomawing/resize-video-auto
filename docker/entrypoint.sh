@@ -10,7 +10,7 @@
 # 用法（docker-compose 里）：
 #   environment:
 #     PUID: 1000      # 在 NAS 上用 `id 你的用户名` 查
-#     PGID: 1000
+#     PGID: 1000      # 注意是 gid 那一项，不是 uid
 #     UMASK: "022"
 # ---------------------------------------------------------------------------
 set -e
@@ -28,6 +28,19 @@ if [ "$(id -u)" != "0" ] || [ "$PUID" = "0" ]; then
 fi
 
 log "以 PUID=$PUID PGID=$PGID UMASK=$UMASK 启动"
+
+# 提前把「属主填错」这种问题暴露出来。填错的后果不是报错，而是切片在 NAS 的
+# 文件管理里改不动也删不掉——那时候再回头查很费劲，不如启动时说清楚。
+# 比对的是存储卷目录本身的属组，新文件默认继承它。
+for d in /vol1 /vol2 /vol3 /vol4 /volume1 /volume2 /mnt; do
+  [ -d "$d" ] || continue
+  vol_gid="$(stat -c '%g' "$d" 2>/dev/null || true)"
+  if [ -n "$vol_gid" ] && [ "$vol_gid" != "$PGID" ]; then
+    log "提示：$d 的属组 gid=$vol_gid，与当前 PGID=$PGID 不一致。"
+    log "      若切片在 NAS 文件管理里改不动或删不掉，把 PGID 改成 $vol_gid 再重启即可。"
+  fi
+  break
+done
 
 # 组和用户不存在就按指定 id 建一个。用 -o 允许 id 重复：
 # NAS 上 PUID 常常就是已存在的 1000，重复也不会报错。

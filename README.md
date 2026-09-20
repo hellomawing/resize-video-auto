@@ -82,6 +82,66 @@ LOCAL=1 ./docker/build-and-push.sh
 > 首次构建要拉 node:22-alpine 和 python:3.12-slim 两个基础镜像，会慢一些。
 > 需要 docker 支持 buildx（Docker Desktop 自带；Linux 上装 `docker-buildx-plugin`）。
 
+### 1-B. 如果 NAS 连不上 Docker Hub：改成在 NAS 上直接构建
+
+**国内不少 NAS 是访问不了 `registry-1.docker.io` 的**（实测某台飞牛就是这样，
+`curl https://registry-1.docker.io/v2/` 直接超时），但本地 `daemon.json` 里配了
+国内镜像源。这种情况下「本地 push → NAS pull」这条路走不通，直接在 NAS 上构建反而
+更省事：不用传镜像，也不用给 NAS 开外网。
+
+前提是 NAS 的基础镜像能通过镜像源拉到（`/etc/docker/daemon.json` 里的
+`registry-mirrors`）。先验一下：
+
+```bash
+docker pull python:3.12-slim-bookworm
+docker pull node:22-alpine
+```
+
+两个都能下就没问题。然后把源码打包传上去构建：
+
+```bash
+# ① 本地：打一个干净的源码包（不含 node_modules 和 dist，几十 KB）
+tar -czf /tmp/vs-src.tar.gz \
+  --exclude='web/node_modules' --exclude='web/dist' --exclude='__pycache__' \
+  app core docker web requirements.txt
+
+# ② 传到 NAS
+scp -P 7788 /tmp/vs-src.tar.gz admin@NAS_IP:/vol1/1000/video-splitter/src.tar.gz
+
+# ③ NAS 上：解包并构建
+cd /vol1/1000/video-splitter && tar -xzf src.tar.gz -C src && cd src
+docker build -f docker/Dockerfile -t video-splitter:1.0.0 .
+```
+
+构建完镜像名就是 `video-splitter:1.0.0`，`deploy/.env` 里的 `VS_IMAGE` 照抄即可，
+不需要 `docker login`。
+
+> **构建要通过 SSH 跑很久，注意别让它被断开带走。** 直接 `ssh nas "docker build ..."`
+> 挂在前台时，一旦连接中断构建就一起没了。用 `setsid` 脱离会话：
+>
+> ```bash
+> setsid bash -c 'docker build -f docker/Dockerfile -t video-splitter:1.0.0 . \
+>   > ../build.log 2>&1' < /dev/null > /dev/null 2>&1 &
+> ```
+>
+> 关键是**三个 fd 都要重定向掉**。少重定向 stdin 的话，`docker build` 会占住
+> SSH 通道的 stdin，导致 sshd 不认为会话结束、本地命令一直不返回。
+> 之后用 `tail -f ../build.log` 看进度。
+>
+> 受镜像源速度影响，ffmpeg 那一步（Debian 上依赖链很长）可能要 10 分钟以上，
+> 耐心等。构建有分层缓存，中途失败重跑不会从头再来。
+
+> ⚠️ **构建上下文放在 NAS 共享目录里时，注意权限位这个坑。**
+> 实测飞牛 `/vol1/1000/**` 下的文件，经典权限位是 `000`（真实访问靠 ACL，
+> 所以平时读写都正常）。而 `docker COPY` 会**原样保留这个 000**，镜像里的代码
+> 就变成 root 可读、其它用户全不可读，entrypoint 按 PUID 降权后直接
+> `PermissionError`，容器无限重启。本仓库的 Dockerfile 里已经用
+> `RUN chmod -R a+rX ...` 兜住了，所以直接构建不会有问题；
+> 但如果你自己另写 Dockerfile，记得做同样的事。
+>
+> 判断方法：`docker run --rm --entrypoint sh 镜像名 -c 'ls -la /opt/video-splitter/app'`，
+> 看到 `----------` 就是中招了。
+
 ### 2. 在 NAS 上部署
 
 把 `deploy/` 整个目录拷到 NAS，然后：
@@ -107,7 +167,20 @@ docker compose up -d
 
 容器默认以 root 跑的话，切出来的视频文件属主是 root，在 NAS 的文件管理里会显示成
 「不属于任何用户」——既改不了名也删不掉。填成你自己的 uid/gid 就没这个问题。
-飞牛默认管理员通常是 `1000:1000`。填 `0` 就是按 root 跑。
+
+**注意 gid 往往不等于 uid**，`id 你的用户名` 输出里的两项都要看：
+
+```
+$ id admin
+uid=1000(admin) gid=1001(Users) groups=1001(Users),994(docker),1000(Administrators)
+      ↑ PUID 填这个        ↑ PGID 填这个
+```
+
+实测飞牛 fnOS 的 admin 是 `1000:1001`（`Users` 组是 1001），群晖常见 `1026:100`。
+填 `0` 就是按 root 跑。
+
+> 填错不会报错，只会让文件属主不对。容器启动时会拿挂载卷的属组和 `PGID` 比一下，
+> 对不上直接在日志里提示该填多少，`docker logs video-splitter` 能直接看到。
 
 ### 3. 挂载要监控的目录
 
@@ -374,8 +447,19 @@ appcenter-cli manual-install enable
 copy 模式按关键帧对齐切，每段实际会比目标多切一点，加起来经常**略大于**原片，
 所以判定放宽到 1.5 倍以内，真正的判据是**时长吻合**。
 
+> ⚠️ **实测发现的一个坑：撤销的目标目录如果同时是监控目录，原片会被立刻重新切一遍。**
+>
+> 防重复处理的机制是隐式的——切完把源文件改名成 `#origin`，原路径不再匹配，自然就不会重复切。
+> 而撤销干的正是把这个改名还原，于是这道防线一并消失。实测：撤销后 37 秒，
+> 监控目录就把恢复出来的原片又切了一次，看上去像「撤销没生效」。
+>
+> 临时规避：撤销前先在网页上把这个监控目录**停用**（监控目录页的开关），
+> 恢复完再按需启用。根本上要靠给扫描器加「已处理过」的记录，见下方备注。
+
 **删除方式**：优先扔进系统回收站而不是直接删除，Linux 下在 NAS 上一般需要
 `trash-cli` 或桌面环境支持；不可用时退回直接删除。删完会明确告诉你走的是哪条路。
+（容器镜像里没装回收站工具，所以走的是直接删除，返回信息里会写明
+「当前环境没有可用的回收站」。）
 
 ---
 

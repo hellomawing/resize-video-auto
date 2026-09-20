@@ -48,6 +48,15 @@ COPY app ./app
 COPY core ./core
 COPY --from=web /web/dist ./web/dist
 
+# 显式统一权限，不要依赖源文件的 mode 位。
+#
+# 踩过的坑：构建上下文如果放在 NAS 的共享目录里（实测飞牛 /vol1/1000/** 就是），
+# 那些文件用 stat 看经典权限位是 000 —— 实际访问靠的是 ACL，所以平时读写都正常。
+# 而 docker COPY 会原样保留这个 000，镜像里的代码就成了 root 可读、别人全不可读。
+# 于是 entrypoint 按 PUID 降权之后直接 PermissionError，容器反复重启。
+# 下面这行把它兜住：a+rX 给目录加执行位、给文件加读位，不放开写权限。
+RUN chmod -R a+rX app core web requirements.txt
+
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh && mkdir -p /data
 
