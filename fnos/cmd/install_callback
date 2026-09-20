@@ -85,7 +85,6 @@ cat > "$ENV_FILE" <<EOF
 VS_DATA=${DATA_DIR}
 PUID=${wizard_puid:-1000}
 PGID=${wizard_pgid:-1000}
-VS_PORT=8099
 TZ=${wizard_timezone:-Asia/Shanghai}
 EOF
 

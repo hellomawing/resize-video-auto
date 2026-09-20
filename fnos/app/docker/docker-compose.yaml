@@ -1,19 +1,25 @@
 services:
   video-splitter:
-    image: ${VS_IMAGE:-yourname/video-splitter:latest}
+    # ↓↓↓ 打包前必须改掉这一行：换成你用 docker/build-and-push.sh 推上去的镜像地址 ↓↓↓
+    # 留着 yourname 占位会在安装后拉不到镜像，cmd/install_init 会提前拦下并提示。
+    image: yourname/video-splitter:latest
     container_name: video-splitter
     restart: unless-stopped
     ports:
-      - "${VS_PORT:-8099}:8099"
+      # 与 manifest 里的 service_port 保持一致，不要随便改：应用中心的桌面入口按它跳转
+      - "8099:8099"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      # 容器内进程的属主，由安装向导收集后写进 .env。
+      # 不设或设成 0 就是以 root 跑，切出来的切片属主会是 root，NAS 文件管理里不好操作。
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       UMASK: "022"
       VS_LOG_LEVEL: info
     volumes:
-      # 配置、数据库、任务记录。指向应用自己的 var 目录，
-      # 卸载应用时不勾选「删除数据」就还能保留下来。
+      # 配置、数据库、任务记录。值由 cmd/install_callback 写进 .env，
+      # 指向应用自己的 var 目录——装到哪个存储空间就跟着去哪里。
+      # 卸载时不勾选「删除数据」就还能保留下来。
       - ${VS_DATA:-/vol1/@appdata/video-splitter}:/data
       # ↓ 分隔标记：cmd/install_callback 只重写这两行之间的内容，其它部分不要动
       # >>> volumes

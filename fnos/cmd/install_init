@@ -1,8 +1,10 @@
 #!/bin/bash
 # cmd/install_init —— 安装前检查
 #
-# 这个应用本体跑在容器里，所以先确认目标机器上 Docker 是可用的。
-# 提前拦下来，比装到最后一步才失败、用户一脸问号要好得多。
+# 两个前置条件，都提前拦下来：比装到最后一步才失败、用户一脸问号要好得多。
+#   1. 目标机器上 Docker 可用（这个应用本体跑在容器里）
+#   2. 打包时把镜像地址改掉了——忘了改的话，装完会卡在拉不到镜像，
+#      而那时报错是 docker 的英文原文，用户很难自己定位到原因
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "未检测到 Docker 环境。请先在「应用中心 → Docker」里启用容器功能，再安装本应用。" > "${TRIM_TEMP_LOGFILE}"
@@ -11,6 +13,12 @@ fi
 
 if ! docker info >/dev/null 2>&1; then
     echo "Docker 服务未启动或当前用户没有访问权限。请确认 Docker 已正常运行后重试。" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+fi
+
+COMPOSE_FILE="${TRIM_APPDEST}/docker/docker-compose.yaml"
+if [ -f "$COMPOSE_FILE" ] && grep -q 'image:[[:space:]]*yourname/' "$COMPOSE_FILE"; then
+    echo "这个安装包还没有指定容器镜像（编排文件里的 image 仍是 yourname/... 占位）。<br>请开发者先运行 docker/build-and-push.sh 推送镜像，并把 fnos/app/docker/docker-compose.yaml 里的镜像地址改成自己的，再重新打包。" > "${TRIM_TEMP_LOGFILE}"
     exit 1
 fi
 

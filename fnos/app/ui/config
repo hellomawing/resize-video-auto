@@ -2,8 +2,8 @@
     ".url": {
         "video-splitter.main": {
             "title": "视频分割",
-            "icon": "images/icon-{0}.png",
-            "type": "url",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
             "protocol": "http",
             "port": "8099",
             "url": "/",

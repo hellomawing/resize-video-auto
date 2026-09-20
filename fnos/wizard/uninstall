@@ -8,7 +8,7 @@
             },
             {
                 "type": "switch",
-                "field": "remove_data",
+                "field": "wizard_remove_data",
                 "label": "同时删除应用数据",
                 "initValue": "false"
             },

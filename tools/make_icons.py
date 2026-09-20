@@ -15,8 +15,11 @@ tools/make_icons.py —— 生成应用图标
 产出（4 个文件）：
     fnos/ICON.PNG                  64x64   应用包小图标
     fnos/ICON_256.PNG              256x256 应用包大图标
-    fnos/app/ui/images/icon-64.png  64x64   桌面图标（小）
-    fnos/app/ui/images/icon-256.png 256x256 桌面图标（大）
+    fnos/app/ui/images/icon_64.png  64x64   桌面图标（小）
+    fnos/app/ui/images/icon_256.png 256x256 桌面图标（大）
+
+    （桌面图标用下划线：飞牛约定 app/ui/config 里写 images/icon_{0}.png，
+      {0} 会被替换成尺寸，所以要跟上面对应的文件名保持一致）
 """
 
 from __future__ import annotations
@@ -110,8 +113,8 @@ def main() -> None:
     targets = [
         (PROJECT_DIR / "fnos" / "ICON.PNG", 64),
         (PROJECT_DIR / "fnos" / "ICON_256.PNG", 256),
-        (PROJECT_DIR / "fnos" / "app" / "ui" / "images" / "icon-64.png", 64),
-        (PROJECT_DIR / "fnos" / "app" / "ui" / "images" / "icon-256.png", 256),
+        (PROJECT_DIR / "fnos" / "app" / "ui" / "images" / "icon_64.png", 64),
+        (PROJECT_DIR / "fnos" / "app" / "ui" / "images" / "icon_256.png", 256),
     ]
     cache: dict[int, list] = {}
     for path, size in targets:

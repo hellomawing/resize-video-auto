@@ -45,12 +45,28 @@
 
 ---
 
+## 先选一条路
+
+| | 方式一：Docker | 方式二：飞牛 fnOS 应用（fpk） |
+|---|---|---|
+| 适合 | **想快点跑起来**，或者手上不是飞牛 | 飞牛用户，想要桌面图标和应用中心统一管理 |
+| 操作 | 改两个文件 → `docker compose up -d` | 装 fnpack → `fnpack build` → 装 fpk |
+| 得到 | 一个容器，浏览器按 `IP:8099` 打开 | 桌面出现「视频分割」图标，点开即用 |
+
+两种方式跑的是**同一个镜像**，功能完全一样。飞牛用户建议先走方式一确认能跑通，
+再打包成 fpk——这样出问题时容易定位是镜像的问题还是包的问题。
+
+---
+
 ## 部署方式一：Docker
+
+> 飞牛 fnOS 用户同样适用：飞牛自带 Docker，SSH 上去按下面的步骤做即可，
+> 不一定非要打成 fpk。
 
 ### 1. 构建并推送镜像（只需要做一次）
 
-镜像支持 **amd64 和 arm64** 双架构——飞牛、群晖、绿联都有 ARM 机型，
-推一个多架构 manifest 之后，`docker pull` 在任何机器上都会自动拿到对的那一份。
+镜像支持 **amd64 和 arm64** 双架构。推一个多架构 manifest 之后，`docker pull` 会按机器
+自动选对的那一份，x86 与 ARM 的 NAS 不用分别维护镜像。
 
 ```bash
 DOCKERHUB_USER=你的用户名 ./docker/build-and-push.sh
@@ -122,27 +138,99 @@ volumes:
 - **应用中心统一管理** — 启动 / 停止 / 升级 / 卸载都走飞牛自己的流程
 - **数据保留策略** — 卸载时可选是否删除配置和任务记录
 
-### 打包
+### 前提：先把镜像推上去
+
+fpk 包里只有编排文件和脚本，容器镜像要从 Docker Hub 拉，所以先做一次多架构构建推送：
 
 ```bash
-# 用飞牛官方的 fnpack 工具
-fnpack create --template docker video-splitter
+DOCKERHUB_USER=你的用户名 ./docker/build-and-push.sh
 ```
 
-打包前把镜像地址填好：
+再把镜像地址填进 `fnos/app/docker/docker-compose.yaml` 的 `image`。这一项**必须手改**：
+留着 `yourname/...` 占位的话，`cmd/install_init` 会在安装第一步就拦下来并提示你
+（总比装完卡在拉不到镜像、甩一段 docker 英文报错要好）。
 
-- `fnos/app/docker/docker-compose.yaml` 里的 `image`
-- 或者打包后在安装时由 `.env` 覆盖
+### 打包
+
+`fnos/` 已经是一个**完整的应用包**，**不需要**再执行 `fnpack create`——那个命令是用来
+从模板新建空项目的，在本项目上跑只会平白多出一份用不上的骨架。
+
+1）下载官方 `fnpack`（当前 1.2.3，按开发机的系统选一个）：
+
+| 系统 | 文件 |
+|------|------|
+| Windows x86 | `fnpack-1.2.3-windows-amd64` |
+| Linux x86 | `fnpack-1.2.3-linux-amd64` |
+| Linux ARM | `fnpack-1.2.3-linux-arm64` |
+| macOS Intel | `fnpack-1.2.3-darwin-amd64` |
+| macOS Apple Silicon | `fnpack-1.2.3-darwin-arm64` |
+
+下载地址：<https://developer.fnnas.com/docs/cli/fnpack>
+
+Linux / macOS 装到系统路径：
+
+```bash
+chmod +x fnpack-1.2.3-linux-amd64
+sudo mv fnpack-1.2.3-linux-amd64 /usr/local/bin/fnpack
+fnpack --help
+```
+
+2）打包。在应用目录里执行，产物是 `video-splitter.fpk`：
+
+```bash
+cd fnos
+fnpack build
+```
+
+`fnpack` 在生成 `.fpk` 前会校验必要文件，本包应当全部通过：`manifest`、
+`config/privilege`、`config/resource`、`ICON.PNG`、`ICON_256.PNG`、`app/`、`cmd/`、
+`wizard/`，以及 `app/ui/`（因为 manifest 里声明了 `desktop_uidir=ui`）。
+
+> 本包已用官方 `fnpack` 1.2.3 实际打包验证通过，产物约 14 KB。
+> 打出来的 `.fpk` 是 gzip 过的 tar，里面是 `manifest`、`config/`、`cmd/`、`wizard/`、
+> 两个 `ICON*.PNG`，以及 `app.tgz`（内含 `docker/docker-compose.yaml` 和 `ui/`）。
+
+3）装到 NAS 上：
+
+```bash
+# 方式一：命令行（推荐）
+appcenter-cli install-fpk video-splitter.fpk
+```
+
+方式二：应用中心 → 手动安装。手动安装入口**默认是关闭的**，需要先在 NAS 上 SSH 执行：
+
+```bash
+appcenter-cli manual-install enable
+```
+
+> 飞牛官方提示：手动安装入口仅用于应用测试，不得用于应用分发。
+
+安装后应用目录在 `/var/apps/video-splitter`，安装脚本的日志在
+`/var/apps/video-splitter/var/install.log`。
 
 `fnos/manifest` 里的关键字段：
 
 | 字段 | 值 | 说明 |
 |------|-----|------|
-| `appname` | `video-splitter` | 应用标识 |
+| `appname` | `video-splitter` | 应用唯一标识，也是安装目录名 |
 | `version` | `1.0.0` | 版本号，升级时递增 |
+| `display_name` | `视频无损分割` | 应用中心里显示的名字 |
+| `source` | `thirdparty` | 第三方应用固定填这个 |
+| `platform` | `all` | `x86` / `arm` / `all` |
 | `service_port` | `8099` | 网页端口 |
-| `platform` | `x86` | 另有 ARM 平台标识 |
-| `desktop_uidir` | `ui` | 桌面图标资源目录 |
+| `desktop_uidir` | `ui` | 桌面入口目录 |
+| `desktop_applaunchname` | `video-splitter.main` | 点应用卡片时打开哪个入口 |
+| `ctl_stop` | `true` | 应用中心里显示启动 / 停止 |
+| `disable_authorization_path` | `true` | 隐藏飞牛的「授权目录」设置 |
+
+两点说明：
+
+- **`platform=all`**：本包内只有 JSON / YAML / bash 脚本和 PNG，不含任何架构相关二进制，
+  架构差异全部由多架构镜像承担，所以按官方定义应该填 `all`。前提是镜像确实推成多架构——
+  如果你只用 `LOCAL=1` 构建过 amd64，请把这里改回 `x86`，否则 ARM 机器能装上却拉不到镜像。
+- **`disable_authorization_path=true`**：本应用的目录权限由自带的「可访问根目录白名单」+
+  compose 里的挂载共同决定，不再依赖飞牛的授权目录机制。若你希望改回由飞牛管授权目录，
+  把这项改成 `false`。
 
 ### 生命周期脚本
 
@@ -151,11 +239,31 @@ fnpack create --template docker video-splitter
 
 | 脚本 | 时机 | 做什么 |
 |------|------|--------|
-| `install_init` | 安装前 | 检查 docker 是否可用，不满足就报错退出 |
+| `install_init` | 安装前 | 检查 docker 是否可用、镜像地址是否已改，不满足就报错退出 |
 | `install_callback` | 安装后 | 扫描 `/vol[0-9]*` 重写挂载列表、生成 `.env`、预置白名单 |
-| `uninstall_init` / `uninstall_callback` | 卸载 | `docker compose down`，按用户选择决定是否删数据 |
+| `uninstall_init` / `uninstall_callback` | 卸载 | `docker compose stop/down`，按用户选择决定是否删数据 |
 | `upgrade_init` / `upgrade_callback` | 升级 | 复用安装逻辑，同时**保留旧的 PUID/PGID** |
 | `config_init` / `config_callback` | 配置变更 | 目前是空操作 |
+
+### 安装向导
+
+`wizard/install` 里收集三个值，卸载向导收集一个：
+
+| 向导字段 | 变成的环境变量 | 用途 |
+|----------|----------------|------|
+| `wizard_mount_paths` | `wizard_mount_paths` | 除存储空间外额外挂载的路径（可选，逗号分隔） |
+| `wizard_puid` / `wizard_pgid` | 同名 | 容器内进程属主，写进 `.env` 的 `PUID` / `PGID` |
+| `wizard_timezone` | `wizard_timezone` | 写进 `.env` 的 `TZ`，决定定时任务按哪个时区触发 |
+| `wizard_remove_data` | `wizard_remove_data` | 卸载时是否连同配置与任务记录一起删掉 |
+
+两个容易踩的坑，改向导时务必注意：
+
+- **字段名就是环境变量名**，两者必须完全一致。`install_callback` 读的是 `wizard_puid`，
+  所以字段也必须叫 `wizard_puid`——名字对不上向导收集的值会被静默忽略、一直用兜底默认值，
+  而且**不会报任何错**，很难发现。
+- **`rules` 是数组**，不是对象。`{"rules": {"required": true}}` 会打包失败；
+  正确写法是 `{"rules": [{"required": true, "message": "..."}]}`。
+  另外 `switch` 类型的 `initValue` 要写字符串 `"false"`，写布尔 `false` 同样过不了校验。
 
 `install_callback` 只重写 `docker-compose.yaml` 里这两行标记**之间**的内容，其余部分保持不动：
 
