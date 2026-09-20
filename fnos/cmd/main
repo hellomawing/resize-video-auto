@@ -1,0 +1,52 @@
+#!/bin/bash
+# cmd/main —— 应用的启停与状态检查
+#
+# Docker 应用的启停由飞牛应用中心通过 compose 接管，所以 start/stop 不需要
+# 自己做任何事，只把状态检查写对就行——应用中心靠 status 的返回码判断健康度。
+#   exit 0 = 运行中
+#   exit 3 = 未运行
+#   exit 1 = 出错
+#
+# 注意：不要 echo 到 stdout，出错信息要写进 $TRIM_TEMP_LOGFILE，
+# 那样才会以对话框形式展示给用户。
+
+COMPOSE_FILE="${TRIM_APPDEST}/docker/docker-compose.yaml"
+
+# 从编排文件里取容器名，避免两处硬编码不一致
+container_name() {
+    local name=""
+    if [ -f "$COMPOSE_FILE" ]; then
+        name=$(grep -E '^[[:space:]]*container_name:' "$COMPOSE_FILE" \
+               | head -n 1 | sed 's/.*container_name:[[:space:]]*//' \
+               | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    fi
+    [ -n "$name" ] || name="video-splitter"
+    printf '%s' "$name"
+}
+
+is_running() {
+    local name
+    name=$(container_name)
+    command -v docker >/dev/null 2>&1 || return 1
+    [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = "true" ]
+}
+
+case "$1" in
+    start)
+        # 由应用中心执行 compose 启动，这里无需重复操作
+        exit 0
+        ;;
+    stop)
+        # 同上，由应用中心负责停止
+        exit 0
+        ;;
+    status)
+        if is_running; then
+            exit 0
+        fi
+        exit 3
+        ;;
+    *)
+        exit 1
+        ;;
+esac

@@ -1,0 +1,61 @@
+[
+    {
+        "stepTitle": "视频无损分割 · 安装选项",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "安装完成后，在飞牛桌面点「视频分割」图标即可打开网页控制台，添加要监控的文件夹、设置定时任务、调整分割参数。<br><br>默认会自动挂载机器上所有的存储空间（/vol1、/vol2 …），一般不需要改下面第一项。"
+            },
+            {
+                "type": "text",
+                "field": "mount_paths",
+                "label": "额外挂载的路径（可选）",
+                "initValue": "",
+                "rules": {
+                    "pattern": "^$|^/.*$",
+                    "message": "请填写绝对路径，例如 /mnt/usb；多个路径用英文逗号分隔"
+                }
+            },
+            {
+                "type": "tips",
+                "helpText": "下面两项决定容器以哪个用户的身份读写文件。<br>建议填 NAS 上你自己的账号 id：SSH 里执行 <b>id 你的用户名</b> 就能查到（飞牛默认管理员通常是 1000:1000）。<br>保持默认的 1000 一般没问题；如果切出来的视频在文件管理里改不动、删不掉，多半是这里填错了。"
+            },
+            {
+                "type": "text",
+                "field": "puid",
+                "label": "运行用户 UID",
+                "initValue": "1000",
+                "rules": {
+                    "required": true,
+                    "pattern": "^[0-9]+$",
+                    "message": "只能填数字，例如 1000"
+                }
+            },
+            {
+                "type": "text",
+                "field": "pgid",
+                "label": "运行用户 GID",
+                "initValue": "1000",
+                "rules": {
+                    "required": true,
+                    "pattern": "^[0-9]+$",
+                    "message": "只能填数字，例如 1000"
+                }
+            },
+            {
+                "type": "text",
+                "field": "timezone",
+                "label": "时区",
+                "initValue": "Asia/Shanghai",
+                "rules": {
+                    "required": true,
+                    "message": "请填写时区名，例如 Asia/Shanghai"
+                }
+            },
+            {
+                "type": "tips",
+                "helpText": "时区会影响定时任务的触发时刻：填 Asia/Shanghai 时，「每天凌晨 3 点」指的就是北京时间凌晨 3 点。"
+            }
+        ]
+    }
+]

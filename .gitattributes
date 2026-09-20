@@ -1,0 +1,27 @@
+# 统一换行符，避免在 Windows 上检出的文件被转成 CRLF。
+# 这一点对本项目是硬要求：docker/entrypoint.sh、fnos/cmd/* 都是在
+# Linux 容器和 NAS 上执行的，一旦带上 CR 就会报
+# "/bin/sh^M: bad interpreter" 或 "\r: command not found"。
+
+* text=auto
+
+# 在 Linux 容器 / NAS 上执行的脚本，一律 LF
+*.sh                text eol=lf
+docker/entrypoint.sh text eol=lf
+cli/*.command       text eol=lf
+cli/*.py            text eol=lf
+fnos/cmd/*          text eol=lf
+fnos/wizard/*       text eol=lf
+fnos/app/ui/config  text eol=lf
+fnos/manifest       text eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat               text eol=crlf
+
+# 二进制资源不做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gif binary
+*.db binary

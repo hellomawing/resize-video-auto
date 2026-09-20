@@ -1,0 +1,36 @@
+# 只把构建真正需要的东西送进 Docker 上下文。
+# 少传文件不只是快，更重要是防止把本地 data/ 里带账号信息的数据库、
+# 或者用户自己的视频文件误打进镜像层。
+
+.git
+.gitignore
+.workbuddy
+
+# 运行期数据（含数据库与配置）
+data
+config
+
+# Python
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.pytest_cache
+
+# 前端依赖与产物（产物由镜像内的 node 阶段重新构建）
+web/node_modules
+web/dist
+
+# 编辑器与系统
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# 文档与打包产物
+docs
+*.md
+fnos/*.fpk
+docker/*.fpk

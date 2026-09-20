@@ -1,0 +1,8 @@
+# video-splitter NAS 版 · 服务端依赖
+# 只装必要的：切割引擎用的是 Python 标准库，ffmpeg 由镜像提供。
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+apscheduler==3.11.0
+watchdog==6.0.0

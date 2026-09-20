@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "video-splitter.main": {
+            "title": "视频分割",
+            "icon": "images/icon-{0}.png",
+            "type": "url",
+            "protocol": "http",
+            "port": "8099",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}

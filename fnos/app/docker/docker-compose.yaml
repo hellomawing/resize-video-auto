@@ -1,0 +1,26 @@
+services:
+  video-splitter:
+    image: ${VS_IMAGE:-yourname/video-splitter:latest}
+    container_name: video-splitter
+    restart: unless-stopped
+    ports:
+      - "${VS_PORT:-8099}:8099"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: "022"
+      VS_LOG_LEVEL: info
+    volumes:
+      # 配置、数据库、任务记录。指向应用自己的 var 目录，
+      # 卸载应用时不勾选「删除数据」就还能保留下来。
+      - ${VS_DATA:-/vol1/@appdata/video-splitter}:/data
+      # ↓ 分隔标记：cmd/install_callback 只重写这两行之间的内容，其它部分不要动
+      # >>> volumes
+      - /vol1:/vol1
+      # <<< volumes
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,26 @@
+#!/bin/bash
+# cmd/uninstall_callback —— 卸载后的数据清理
+#
+# 默认什么都不删：配置、任务历史、数据库都留在应用的 var 目录里，
+# 用户重装之后接着用。只有用户在卸载向导里明确勾选了「同时删除数据」才清理。
+
+set -u
+
+if [ "${wizard_remove_data:-false}" != "true" ]; then
+    exit 0
+fi
+
+DATA_DIR="${TRIM_PKGVAR:-}"
+
+# 双重保险：只有路径确实指向本应用的 var 目录、且位于存储空间下才允许删除。
+# 这个脚本会被以 root 执行，删错目录的代价太大，宁可多判两道。
+case "$DATA_DIR" in
+    /vol*"${TRIM_APPNAME}"*) ;;
+    *)
+        echo "数据目录路径异常（${DATA_DIR}），为安全起见未执行删除。请手工确认后再清理。" > "${TRIM_TEMP_LOGFILE}"
+        exit 1
+        ;;
+esac
+
+rm -rf "$DATA_DIR"
+exit 0

@@ -1,0 +1,37 @@
+# 给 NAS 用的部署编排（直接拉镜像，不需要源码和构建环境）
+#
+#   1. 复制 .env.example 为 .env，填好 PUID / PGID / 镜像名
+#   2. docker compose up -d
+#   3. 浏览器打开 http://NAS的IP:8099
+#
+# 飞牛 fnOS 用户也可以直接用 fnos/ 目录打出来的 fpk 应用包，
+# 那个包已经内置了下面这套编排，装完在应用中心点开就能用。
+
+services:
+  video-splitter:
+    image: ${VS_IMAGE:-yourname/video-splitter:latest}
+    container_name: video-splitter
+    restart: unless-stopped
+    ports:
+      - "${VS_PORT:-8099}:8099"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # NAS 上的用户 id：SSH 里执行 `id 你的用户名`，像 fnOS 默认管理员是 1000:1000。
+      # 不填就按 root 跑，切片属主会是 root，文件管理里不好改也不好删。
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: "022"
+      VS_LOG_LEVEL: info
+    volumes:
+      # 配置、数据库、任务历史都放这里，建议定期备份
+      - ${VS_DATA:-./data}:/data
+      # 监控目录：容器内路径与宿主机保持一致，这样默认白名单 /vol1…/vol4 直接可用
+      - /vol1:/vol1
+      # 有多个存储空间就继续加，并在网页「设置 → 可访问根目录」里补上
+      # - /vol2:/vol2
+      # - /vol3:/vol3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,13 @@
+#!/bin/bash
+# cmd/upgrade_init —— 升级前停止容器
+#
+# 应用中心升级时不一定保证先停应用，这里主动停一次，
+# 避免旧版本还占着端口或正在切分文件时被替换掉。
+
+COMPOSE_DIR="${TRIM_APPDEST}/docker"
+
+if command -v docker >/dev/null 2>&1 && [ -f "${COMPOSE_DIR}/docker-compose.yaml" ]; then
+    ( cd "$COMPOSE_DIR" && docker compose down --remove-orphans ) >/dev/null 2>&1 || true
+fi
+
+exit 0

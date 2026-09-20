@@ -1,0 +1,13 @@
+#!/bin/bash
+# cmd/uninstall_init —— 卸载前把容器停掉并移除
+#
+# 应用中心卸载时会执行 compose 的清理，但显式再跑一次 down 更稳妥：
+# 避免容器因为异常状态变成孤儿，一直占着 8099 端口不放。
+
+COMPOSE_DIR="${TRIM_APPDEST}/docker"
+
+if command -v docker >/dev/null 2>&1 && [ -f "${COMPOSE_DIR}/docker-compose.yaml" ]; then
+    ( cd "$COMPOSE_DIR" && docker compose down --remove-orphans ) >/dev/null 2>&1 || true
+fi
+
+exit 0

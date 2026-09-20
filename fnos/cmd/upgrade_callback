@@ -1,0 +1,27 @@
+#!/bin/bash
+# cmd/upgrade_callback —— 升级后重建环境
+#
+# 升级会把 app/docker/docker-compose.yaml 换成新包里的版本，于是：
+#   * 挂载列表会回退成包里默认的 /vol1 —— 必须按本机实际情况重新生成
+#   * 用户之前通过向导设置的 PUID/PGID 存在 .env 里，要保留下来
+#
+# 直接在子 shell 里复用 install_callback，避免两处逻辑各改各的、慢慢跑偏。
+# （子 shell 里 install_callback 的 exit 只会结束子 shell，不会影响本脚本。）
+
+set -u
+
+COMPOSE_DIR="${TRIM_APPDEST}/docker"
+ENV_FILE="${COMPOSE_DIR}/.env"
+INSTALL_CALLBACK="${TRIM_APPDEST}/cmd/install_callback"
+
+if [ -f "$INSTALL_CALLBACK" ]; then
+    # 从旧的 .env 里把用户原来的选择读回来，作为向导参数的替代
+    if [ -f "$ENV_FILE" ]; then
+        export wizard_puid="$(grep -E '^PUID=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
+        export wizard_pgid="$(grep -E '^PGID=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
+        export wizard_timezone="$(grep -E '^TZ=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
+    fi
+    ( source "$INSTALL_CALLBACK" ) || true
+fi
+
+exit 0

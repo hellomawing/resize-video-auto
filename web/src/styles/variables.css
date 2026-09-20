@@ -1,0 +1,53 @@
+/* 全局设计变量：颜色、间距、圆角、字号，集中管理，避免散落魔法值。 */
+:root {
+  /* 主色与状态色（与契约第 8 节一致） */
+  --color-primary: #185fa5;
+  --color-primary-dark: #124c85;
+  --color-primary-soft: #e8f1fa;
+  --color-success: #3b6d11;
+  --color-success-soft: #eaf3e1;
+  --color-danger: #a32d2d;
+  --color-danger-soft: #f7e9e9;
+  --color-warning: #b8860b;
+  --color-warning-soft: #fbf2dc;
+  --color-muted: #5f5e5a;
+  --color-muted-soft: #ececeb;
+
+  /* 中性色 / 背景 */
+  --color-bg: #f4f6f9;
+  --color-surface: #ffffff;
+  --color-surface-2: #fafbfc;
+  --color-border: #e3e7ec;
+  --color-border-strong: #cdd4dc;
+  --color-text: #1f2329;
+  --color-text-soft: #5f6470;
+  --color-text-faint: #9aa1ab;
+
+  /* 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+
+  /* 字号 */
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 26px;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow: 0 1px 3px rgba(16, 24, 40, 0.08), 0 6px 16px rgba(16, 24, 40, 0.05);
+
+  /* 等宽字体（日志查看器使用） */
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
