@@ -158,13 +158,41 @@
 | POST | `/api/watchpoints` | body `{path, recursive, scanMode, scanIntervalHours, scanTime, note}` |
 | PUT | `/api/watchpoints/{id}` | 局部更新（上表除 `path`/`id` 外的字段均可） |
 | DELETE | `/api/watchpoints/{id}` | 删除（想让它别再自动扫请改 `scanMode`，不必删除） |
-| POST | `/api/watchpoints/{id}/scan` | **立即扫描一次**，返回 `{found, queued, skipped, message}` |
+| POST | `/api/watchpoints/{id}/scan` | **立即扫描一次**，返回 `ScanResult`（见下） |
 
 `PUT` 会回读一次再返回，因此响应里的 `scanIntervalHours` / `scanTime`
 一定是纠正后的**实际生效值**，前端直接用它刷新界面即可。
 
+### 扫描结果 `ScanResult`
+
+```json
+{
+  "found": 0, "queued": 0, "skipped": 0, "waiting": 0,
+  "ignored": [
+    { "name": "DJI_0001#origin.MP4", "reason": "是本工具切出来的切片或已标记的原片" }
+  ],
+  "ignoredTotal": 1,
+  "message": "扫描完成：没有需要处理的新视频。目录里有 1 个视频文件被跳过（…）"
+}
+```
+
+- `found`：候选视频数（**不含**被跳过的）。
+- `skipped`：进了候选、又被过滤规则拒掉的数量。
+- `waiting`：还在拷贝中、需要等文件稳定的数量。
+- `ignored` / `ignoredTotal`：**收集阶段**就被跳过的文件（本工具的切片、`#origin`
+  原片、归档目录里的）。明细最多 50 条，总数以 `ignoredTotal` 为准。
+- `message`：后端生成的中文总结，**前端直接展示，不要自己另拼文案**——
+  它会说清「跳过了几个、为什么跳过、接下来该怎么办」，这正是早期版本只回一句
+  「没有发现需要处理的视频」时最缺的信息。
+
+> **为什么要区分 `skipped` 和 `ignored`**：两者都表现为「文件没被处理」，
+> 但 `ignored` 是**刻意保护**的结果——不跳过就会把刚切出来的原片或切片再切一遍，
+> 数据会废掉。把它们如实报出来，用户才分得清「真的没有视频」和「被有意跳过了」。
+
 ### POST /api/scan
-扫描**全部**监控目录并入队（同样不看 `scanMode`），返回 `{found, queued}`。
+扫描**全部**监控目录并入队（同样不看 `scanMode`），返回 `ScanResult`（字段同上，
+数值为各目录合计）。一条都没入队但确实看到了已处理的文件时，`message` 会说明
+原因，而不是只回一句「0 个视频」。
 
 ---
 
@@ -261,20 +289,47 @@ body：`{ "path": "/vol1/media/inbox", "recursive": true }`
       "originDuration": 0, "sliceDurations": [], "durationSum": 0
     }
   ],
+  "originOnly": [
+    {
+      "origin": "/vol1/media/inbox/DJI_0002#origin.MP4",
+      "name": "DJI_0002#origin.MP4",
+      "base": "DJI_0002", "suffix": ".MP4",
+      "size": 6514105652, "mtime": "2026-09-17T11:58:11+08:00"
+    }
+  ],
   "orphans": ["/vol1/media/inbox/xxx#1.MP4"],
   "okCount": 1, "badCount": 0
 }
 ```
 
+- `originOnly`：**有 `#origin` 原片、却一个切片都没有**的文件。成因通常是切片被
+  手工删掉或移走了。它们没有可撤销的内容，但必须列出来——否则这些文件在界面上
+  彻底隐身（扫描会跳过它们，`groups` 和 `orphans` 里也都没有它们），
+  用户只能去命令行改名才能让它们重新被处理。
+- `orphans`：反过来的情况——有切片、但找不到对应的原片。
+
 ### POST /api/undo/apply
-body：`{ "path": "...", "recursive": true, "deleteSlices": true, "restoreOrigin": true, "trash": true }`
+
+body：
+```json
+{ "path": "...", "recursive": true, "deleteSlices": true,
+  "restoreOrigin": true, "restoreOriginOnly": false, "trash": true }
+```
 ```json
 {
-  "deleted": 3, "restored": 1, "skipped": 0, "freedBytes": 6442450944,
+  "deleted": 3, "trashed": 3, "restored": 1, "restoredOrphans": 0,
+  "skipped": 0, "freedBytes": 6442450944,
   "problems": ["xxx：校验不通过…"],
   "details": [ { "base": "DJI_0001", "action": "deleted+restored", "message": "…" } ]
 }
 ```
+- `restoreOriginOnly` 默认 **false**：是否同时把上面 `originOnly` 里的原片也改回原名。
+  恢复原名等于把它们变回待处理的普通文件，`realtime` 模式下会**立刻被重新分割一次**，
+  所以必须由用户明确要求（界面上是单独的「恢复原名」按钮，带二次确认）。
+  只想恢复原片名、不动别的，传
+  `{ "deleteSlices": false, "restoreOrigin": false, "restoreOriginOnly": true }`。
+- 目标位置已有同名文件时**拒绝覆盖**，失败原因会如实写进 `problems`。
+
 安全约定：**校验不通过的组一律不动**，原片改名也照做（改名非破坏性）。
 
 ---

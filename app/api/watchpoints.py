@@ -121,5 +121,4 @@ def scan_watchpoint(wp_id: str) -> ScanResult:
     if not Path(item["path"]).is_dir():
         raise HTTPException(status_code=400, detail="目录已不存在：%s" % item["path"])
     result = scanner.scan_watchpoint(item, trigger="manual")
-    return ScanResult(found=result["found"], queued=result["queued"],
-                      skipped=result["skipped"], message=result["message"])
+    return ScanResult.from_engine(result)

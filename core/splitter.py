@@ -928,8 +928,19 @@ def is_slice_or_origin(path: Path) -> bool:
     return bool(re.search(r"#(?:\d+|origin)$", path.stem, re.IGNORECASE))
 
 
-def collect_files(folders, exts, recursive: bool, skip_dirs=()):
-    """扫描目录下的视频文件，自动跳过自己的产物和归档目录。"""
+def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
+    """
+    扫描目录下的视频文件，自动跳过自己的产物和归档目录。
+
+    on_skip 是可选的旁路汇报：传了就在每次「看到一个视频文件、但按规则不处理」
+    时回调一次，参数是 (路径, 原因)。
+
+    为什么需要它：过滤本身是必要的（不跳过就会把刚切完的原片再切一遍，
+    数据会废掉），但**默默跳过**会让用户陷入误判——目录里明明躺着视频，
+    界面却说「没有发现需要处理的视频」，用户只能靠猜。把这个信息如实带出去，
+    用户才分得清「真的没有」和「被有意跳过了」。不传时行为和以前完全一致，
+    命令行那条路不受任何影响。
+    """
     files, seen = [], set()
     for folder in folders:
         base = Path(folder)
@@ -942,8 +953,12 @@ def collect_files(folders, exts, recursive: bool, skip_dirs=()):
                 if not p.is_file() or p.suffix.lower() not in exts:
                     continue
                 if is_slice_or_origin(p):
+                    if on_skip:
+                        on_skip(p, "是本工具切出来的切片或已标记的原片")
                     continue
                 if any(part in skip_dirs for part in p.parts):
+                    if on_skip:
+                        on_skip(p, "位于原片归档目录")
                     continue
                 rp = p.resolve()
                 if rp in seen:

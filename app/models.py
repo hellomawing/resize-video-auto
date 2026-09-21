@@ -153,11 +153,40 @@ class WatchPointUpdate(CamelModel):
     note: Optional[str] = None
 
 
+class IgnoredFile(CamelModel):
+    """扫描时「看到了但按规则不处理」的文件。
+
+    存在的意义是把「真的没有视频」和「有视频、但被保护性跳过」区分开——
+    以前这两种情况的返回都是 found=0，用户只能靠猜。
+    """
+    name: str
+    reason: str
+
+
 class ScanResult(CamelModel):
     found: int = 0
     queued: int = 0
     skipped: int = 0
+    waiting: int = 0
+    ignored: list[IgnoredFile] = Field(default_factory=list)
+    ignored_total: int = 0
     message: str = ""
+
+    @classmethod
+    def from_engine(cls, result: dict) -> ScanResult:
+        """把扫描引擎的 dict 结果转成对外模型。
+
+        两个扫描入口（全部目录 / 单个目录）出的键完全一致，转换只写这一处，
+        以后加字段就不会漏掉其中一个接口。
+        """
+        return cls(
+            found=result.get("found", 0),
+            queued=result.get("queued", 0),
+            skipped=result.get("skipped", 0),
+            waiting=result.get("waiting", 0),
+            ignored=result.get("ignored") or [],
+            ignored_total=result.get("ignoredTotal", 0),
+            message=result.get("message", ""))
 
 
 # ---------------------------------------------------------------- 定时任务
@@ -215,9 +244,28 @@ class UndoGroup(CamelModel):
     duration_sum: float = 0
 
 
+class UndoLoneOrigin(CamelModel):
+    """已被切分、但切片已经不在了的原片（`原名#origin.扩展名`）。
+
+    成因多半是切片被手工删除或移走了。这类文件以前在界面上完全隐身：
+    扫描器把它当「已处理」跳过，撤销页又只从切片出发去找原片，于是它
+    既不在 groups 也不在 orphans 里，只能 SSH 手工改名才能脱困。
+    它本身不是错误，只是「已经没有可撤销的东西了」。
+    """
+    # 字段名与 UndoGroup.origin 对齐：两者都是「原片的路径」，
+    # 共用同一个恢复函数，就没必要各叫各的
+    origin: str
+    name: str
+    base: str = ""
+    suffix: str = ""
+    size: int = 0
+    mtime: str = ""
+
+
 class UndoPreviewOut(CamelModel):
     path: str
     groups: list[UndoGroup] = Field(default_factory=list)
+    origin_only: list[UndoLoneOrigin] = Field(default_factory=list)
     orphans: list[str] = Field(default_factory=list)
     ok_count: int = 0
     bad_count: int = 0
@@ -228,6 +276,9 @@ class UndoApplyIn(CamelModel):
     recursive: bool = True
     delete_slices: bool = True
     restore_origin: bool = True
+    # 同时把「切片已不在」的原片也恢复原名。默认关，因为恢复原名等于让它
+    # 重新变回待处理文件，实时监听会立刻再切一遍 —— 必须由用户明确要求。
+    restore_origin_only: bool = False
     trash: bool = True
 
 
@@ -241,6 +292,7 @@ class UndoApplyOut(CamelModel):
     deleted: int = 0
     trashed: int = 0
     restored: int = 0
+    restored_orphans: int = 0
     skipped: int = 0
     freed_bytes: int = 0
     problems: list[str] = Field(default_factory=list)

@@ -116,10 +116,22 @@ export interface WatchPointCreate {
   note: string
 }
 
+/** 扫描时「看到了但按规则没处理」的文件 */
+export interface IgnoredFile {
+  name: string
+  reason: string
+}
+
 export interface ScanResult {
   found: number
   queued: number
   skipped: number
+  /** 还在拷贝中、需要等待稳定的数量 */
+  waiting: number
+  /** 被跳过的明细，最多几十条 */
+  ignored: IgnoredFile[]
+  /** 被跳过的总数。明细可能被截断，要显示总数时以这个为准 */
+  ignoredTotal: number
   /** 后端生成的人话总结，直接展示即可，不要在前端另拼一套文案 */
   message: string
 }
@@ -214,9 +226,26 @@ export interface UndoGroup {
   durationSum: number
 }
 
+/**
+ * 已被切分、但切片已经不在的原片（`原名#origin.扩展名`）。
+ *
+ * 它没有可撤销的内容，但也必须显示出来：否则这个文件在界面上彻底隐身
+ * （扫描跳过它、撤销页的 groups/orphans 里也没有它），只能手工改名。
+ */
+export interface UndoLoneOrigin {
+  origin: string
+  name: string
+  base: string
+  suffix: string
+  size: number
+  mtime: string
+}
+
 export interface UndoPreview {
   path: string
   groups: UndoGroup[]
+  /** 切片已不在的孤零零原片，只能「恢复原名」 */
+  originOnly: UndoLoneOrigin[]
   orphans: string[]
   okCount: number
   badCount: number
@@ -227,6 +256,8 @@ export interface UndoApplyBody {
   recursive: boolean
   deleteSlices: boolean
   restoreOrigin: boolean
+  /** 是否同时把「切片已不在」的原片也恢复原名 */
+  restoreOriginOnly?: boolean
   trash: boolean
 }
 
@@ -238,11 +269,15 @@ export interface UndoDetail {
 
 export interface UndoResult {
   deleted: number
+  trashed: number
   restored: number
+  /** 本次恢复原名的「无切片原片」数量 */
+  restoredOrphans: number
   skipped: number
   freedBytes: number
   problems: string[]
   details: UndoDetail[]
+  orphans: string[]
 }
 
 // ---- WebSocket 消息（服务端单向推送） ----

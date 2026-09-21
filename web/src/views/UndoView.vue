@@ -7,8 +7,8 @@ import Toggle from '../components/Toggle.vue'
 import DirPicker from '../components/DirPicker.vue'
 import { undoPreview, undoApply } from '../api/undo'
 import { useToast } from '../composables/useToast'
-import { formatBytes } from '../composables/useFormat'
-import type { UndoPreview, UndoResult } from '../api/types'
+import { formatBytes, formatDateTime } from '../composables/useFormat'
+import type { UndoPreview, UndoResult, UndoLoneOrigin } from '../api/types'
 
 const toast = useToast()
 
@@ -29,6 +29,14 @@ const flags = ref({ deleteSlices: true, restoreOrigin: true, trash: true })
 
 const okGroups = computed(() => preview.value?.groups.filter((g) => g.ok) ?? [])
 const badGroups = computed(() => preview.value?.groups.filter((g) => !g.ok) ?? [])
+
+// 切片已经不在了的原片。它们撤销不了，但必须列出来——否则这些文件在界面上
+// 是隐身的（扫描跳过它们，groups/orphans 里也没有它们），只能手工改文件名。
+const loneOrigins = computed(() => preview.value?.originOnly ?? [])
+
+// 恢复原片名（单独一条路，不走「撤销」那套勾选）
+const restoreTarget = ref<UndoLoneOrigin | null>(null)
+const restoring = ref(false)
 
 function togglePick(base: string): void {
   const next = new Set(selected.value)
@@ -90,6 +98,34 @@ async function doApply(): Promise<void> {
   }
 }
 
+/** 恢复某个「切片已不在」的原片的名字，让它重新变回待处理的普通文件。 */
+async function doRestore(): Promise<void> {
+  if (!path.value || !restoreTarget.value) return
+  restoring.value = true
+  try {
+    const res = await undoApply({
+      path: path.value,
+      recursive: recursive.value,
+      deleteSlices: false,
+      restoreOrigin: false,
+      restoreOriginOnly: true,
+      trash: flags.value.trash,
+    })
+    result.value = res
+    restoreTarget.value = null
+    if (res.restoredOrphans > 0) {
+      toast.success(`已恢复 ${res.restoredOrphans} 个原片的名字，它现在是可以被扫描到的普通文件了`)
+    } else {
+      toast.error(res.problems[0] ?? '未能恢复，请检查该文件是否已被占用')
+    }
+    await runPreview()
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '恢复失败')
+  } finally {
+    restoring.value = false
+  }
+}
+
 const columns = [
   { key: 'origin', label: '原片名' },
   { key: 'originSize', label: '原片大小', width: '120px', align: 'right' as const },
@@ -139,12 +175,12 @@ const columns = [
       </div>
 
       <EmptyState
-        v-if="preview.groups.length === 0"
+        v-if="preview.groups.length === 0 && loneOrigins.length === 0"
         text="该目录下没有可撤销的切片分组"
         hint="仅当存在「原片 + 对应切片」时才可撤销"
       />
 
-      <template v-else>
+      <template v-if="preview.groups.length">
         <DataTable :columns="columns">
           <tr v-for="g in preview.groups" :key="g.base" :class="{ 'row-bad': !g.ok }">
             <td class="text-ellipsis" :title="`${g.base}${g.suffix}`">{{ g.base }}{{ g.suffix }}</td>
@@ -180,14 +216,38 @@ const columns = [
           </button>
         </div>
       </template>
+
+      <!--
+        切片已不在的原片。它们没有可撤销的内容，但必须显示出来：
+        扫描会跳过它们（防止把半成品再切一遍），如果不在这里列出来，
+        用户在界面上就完全看不到这些文件，只能去命令行改名。
+      -->
+      <div v-if="loneOrigins.length" class="lone">
+        <div class="lone-title">切片已不在的原片（{{ loneOrigins.length }}）</div>
+        <div class="lone-hint">
+          这些文件已被分割过，但切片已经不在了，所以没有可撤销的内容。
+          它们现在不会出现在扫描结果里——跳过是为了防止把自己切出来的半成品再切一遍。
+          想让它们重新参与分割，点「恢复原名」。
+        </div>
+        <div v-for="item in loneOrigins" :key="item.origin" class="lone-row">
+          <div class="lone-name text-ellipsis" :title="item.name">{{ item.name }}</div>
+          <div class="lone-meta">
+            {{ formatBytes(item.size) }}<span v-if="item.mtime"> · {{ formatDateTime(item.mtime) }}</span>
+          </div>
+          <button class="btn btn--sm" @click="restoreTarget = item">恢复原名</button>
+        </div>
+      </div>
     </div>
 
     <!-- 结果报告 -->
     <div v-if="result" class="card">
-      <h2 class="card-title">撤销结果</h2>
+      <h2 class="card-title">执行结果</h2>
       <div class="result-grid">
         <div><span class="k">删除切片</span><span class="v">{{ result.deleted }}</span></div>
         <div><span class="k">恢复原片</span><span class="v">{{ result.restored }}</span></div>
+        <div v-if="result.restoredOrphans">
+          <span class="k">恢复无切片原片</span><span class="v">{{ result.restoredOrphans }}</span>
+        </div>
         <div><span class="k">跳过</span><span class="v">{{ result.skipped }}</span></div>
         <div><span class="k">释放空间</span><span class="v">{{ formatBytes(result.freedBytes) }}</span></div>
       </div>
@@ -226,6 +286,30 @@ const columns = [
         </button>
       </template>
     </Modal>
+
+    <!-- 恢复原片名的二次确认 -->
+    <Modal :model-value="restoreTarget !== null" title="确认恢复原片名？" @update:model-value="restoreTarget = null">
+      <template v-if="restoreTarget">
+        <p>
+          即将把 <strong>{{ restoreTarget.name }}</strong> 改回
+          <strong>{{ restoreTarget.base }}{{ restoreTarget.suffix }}</strong>（{{ formatBytes(restoreTarget.size) }}）。
+        </p>
+        <p class="warn">
+          恢复原名后，它就不再是「已处理」状态了。如果你的监控目录设的是「实时监听」，
+          它会被<strong>立刻重新分割一次</strong>；设成「仅手动」则要你自己点扫描。
+          改名本身可逆，随时可以再改回去。
+        </p>
+        <p v-if="loneOrigins.length > 1" class="hint-line">
+          注意：该目录下共有 {{ loneOrigins.length }} 个这类原片，本次会全部恢复原名。
+        </p>
+      </template>
+      <template #footer>
+        <button class="btn" @click="restoreTarget = null">取消</button>
+        <button class="btn btn--primary" :disabled="restoring" @click="doRestore">
+          <span v-if="restoring" class="spinner" /> 确认恢复
+        </button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -238,9 +322,45 @@ const columns = [
   font-size: var(--font-size-xs);
   color: var(--color-text-faint);
 }
+.lone {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+.lone-title {
+  font-size: var(--font-size);
+  font-weight: 500;
+  margin-bottom: var(--space-2);
+}
+.lone-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-soft);
+  line-height: 1.7;
+  margin-bottom: var(--space-3);
+}
+.lone-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.lone-row:last-child {
+  border-bottom: none;
+}
+.lone-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-sm);
+}
+.lone-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
 .result-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-4);
 }
@@ -266,5 +386,9 @@ const columns = [
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   font-size: var(--font-size-sm);
+}
+.hint-line {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-soft);
 }
 </style>

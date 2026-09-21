@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections import Counter
 from pathlib import Path
 
 from .. import config, db
@@ -31,6 +32,10 @@ from ..services import queue as job_queue
 from core import splitter as engine
 
 _MAX_TRACKED = 20000
+
+# 单次扫描最多回传多少条「被跳过的文件」明细。切片可能有几十个，
+# 全带回去会把响应撑大；总数照实统计，明细封顶即可。
+_MAX_IGNORED = 50
 
 
 class StabilityTracker:
@@ -147,6 +152,17 @@ def consider_file(path, spec: dict, trigger: str,
 
 # ---------------------------------------------------------------- 目录扫描
 
+def summarize_ignored(ignored: list) -> str:
+    """
+    把被跳过的文件按原因归类成一句人话。
+
+    逐个列文件名只会变成噪音（一个切过 20 段的视频就有 20 个切片），
+    用户真正需要知道的是「跳过了几类东西、各多少个」。
+    """
+    counter = Counter(item["reason"] for item in ignored)
+    return "，".join("%d 个%s" % (n, reason) for reason, n in counter.most_common())
+
+
 def scan_paths(paths, trigger: str, watchpoint_id: str = None,
                respect_settle: bool = True) -> dict:
     """扫描若干目录并入队，返回统计结果。"""
@@ -166,8 +182,23 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
                 "message": "没有可扫描的目录（路径不存在或不是文件夹）",
                 "details": []}
 
+    ignored: list = []
+    ignored_total = 0
+
+    def _note_skip(path, reason):
+        """
+        记录一个「看到了但按规矩不处理」的文件。
+
+        没有这一步，收集阶段被丢掉的文件连个数都不剩，用户看到
+        「没有发现需要处理的视频」时无从判断是真没有还是被跳过了。
+        """
+        nonlocal ignored_total
+        ignored_total += 1
+        if len(ignored) < _MAX_IGNORED:
+            ignored.append({"name": Path(path).name, "reason": reason})
+
     files = engine.collect_files(valid_dirs, spec["exts"], spec["recursive"],
-                                {spec["source_dir"]})
+                                {spec["source_dir"]}, on_skip=_note_skip)
 
     queued = waiting = skipped = 0
     details = []
@@ -183,16 +214,26 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
 
     tracker.prune()
 
-    message = "扫描完成：%d 个视频，入队 %d 个" % (len(files), queued)
-    if waiting:
-        message += "，%d 个还在拷贝中需等待" % waiting
-    if skipped:
-        message += "，跳过 %d 个" % skipped
-    if not files:
+    if files:
+        message = "扫描完成：%d 个视频，入队 %d 个" % (len(files), queued)
+        if waiting:
+            message += "，%d 个还在拷贝中需等待" % waiting
+        if skipped:
+            message += "，跳过 %d 个" % skipped
+        if ignored_total:
+            message += "；另有 %d 个已处理过的文件被跳过（%s）" % (
+                ignored_total, summarize_ignored(ignored))
+    elif ignored_total:
+        message = ("扫描完成：没有需要处理的新视频。目录里有 %d 个视频文件被跳过（%s）——"
+                   "跳过是为了防止把自己切出来的半成品再切一遍。"
+                   "想把原片重新切一次，去「撤销分割」页恢复它的原名。"
+                   % (ignored_total, summarize_ignored(ignored)))
+    else:
         message = "扫描完成：没有发现需要处理的视频"
 
     return {"found": len(files), "queued": queued, "skipped": skipped,
             "waiting": waiting, "message": message,
+            "ignored": ignored, "ignoredTotal": ignored_total,
             "details": sorted(set(details))[:5]}
 
 
@@ -223,18 +264,32 @@ def scan_all(trigger: str = "manual", watchpoint_ids=None) -> dict:
         wanted = set(watchpoint_ids)
         watchpoints = [w for w in watchpoints if w.get("id") in wanted]
 
-    total = {"found": 0, "queued": 0, "skipped": 0, "waiting": 0, "details": []}
+    total = {"found": 0, "queued": 0, "skipped": 0, "waiting": 0,
+             "ignored": [], "ignoredTotal": 0, "details": []}
     for wp in watchpoints:
         r = scan_watchpoint(wp, trigger)
-        for key in ("found", "queued", "skipped", "waiting"):
+        for key in ("found", "queued", "skipped", "waiting", "ignoredTotal"):
             total[key] += r.get(key, 0)
+        total["ignored"].extend(r.get("ignored") or [])
         total["details"].extend(r.get("details") or [])
+    total["ignored"] = total["ignored"][:_MAX_IGNORED]
 
     if not watchpoints:
         total["message"] = "还没有配置监控目录，请先去「监控目录」页面添加"
-    else:
+    elif total["found"]:
         total["message"] = "扫描完成：%d 个目录，%d 个视频，入队 %d 个" % (
             len(watchpoints), total["found"], total["queued"])
         if total["waiting"]:
             total["message"] += "，%d 个还在拷贝中需等待" % total["waiting"]
+        if total["ignoredTotal"]:
+            total["message"] += "；另有 %d 个已处理过的文件被跳过" % total["ignoredTotal"]
+    elif total["ignoredTotal"]:
+        # 一条都没入队，但确实看到了视频文件 —— 必须说清楚为什么没动它，
+        # 否则用户只会看到「0 个视频」，然后开始怀疑扫描坏了
+        total["message"] = ("扫描完成：%d 个目录都没有需要处理的新视频，"
+                            "但有 %d 个视频文件被跳过（%s）"
+                            % (len(watchpoints), total["ignoredTotal"],
+                               summarize_ignored(total["ignored"])))
+    else:
+        total["message"] = "扫描完成：%d 个目录都没有发现需要处理的视频" % len(watchpoints)
     return total

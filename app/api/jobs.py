@@ -39,8 +39,7 @@ def clear_jobs(payload: ClearJobsIn) -> dict:
 def scan_all() -> ScanResult:
     """立即扫描全部启用的监控目录。"""
     result = scanner.scan_all(trigger="manual")
-    return ScanResult(found=result["found"], queued=result["queued"],
-                      skipped=result["skipped"], message=result["message"])
+    return ScanResult.from_engine(result)
 
 
 @router.get("/jobs/{job_id}")

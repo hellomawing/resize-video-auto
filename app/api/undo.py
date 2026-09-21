@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 
 from .. import config
 from ..models import (UndoApplyIn, UndoApplyOut, UndoDetail, UndoGroup,
-                      UndoPreviewIn, UndoPreviewOut)
+                      UndoLoneOrigin, UndoPreviewIn, UndoPreviewOut)
 from .system import ensure_allowed
 from core import splitter as engine
 from core import undo
@@ -38,7 +38,7 @@ def preview(payload: UndoPreviewIn) -> UndoPreviewOut:
     settings = config.load_settings()
     ffprobe = engine.find_bin("ffprobe")
 
-    groups, orphans = undo.scan_groups(
+    groups, orphans, origin_only = undo.scan_groups(
         target, recursive=payload.recursive,
         source_dir=settings["split"].get("sourceDir") or "origin",
         ffprobe=ffprobe)
@@ -47,6 +47,7 @@ def preview(payload: UndoPreviewIn) -> UndoPreviewOut:
     return UndoPreviewOut(
         path=str(target),
         groups=[UndoGroup(**g) for g in groups],
+        origin_only=[UndoLoneOrigin(**o) for o in origin_only],
         orphans=[str(o) for o in orphans],
         ok_count=ok_count,
         bad_count=len(groups) - ok_count)
@@ -55,9 +56,11 @@ def preview(payload: UndoPreviewIn) -> UndoPreviewOut:
 @router.post("/apply", response_model=UndoApplyOut)
 def apply(payload: UndoApplyIn) -> UndoApplyOut:
     target = _resolve_dir(payload.path)
-    if not payload.delete_slices and not payload.restore_origin:
-        raise HTTPException(status_code=400,
-                            detail="既没有勾选删除切片，也没有勾选恢复原片名，没有可执行的操作")
+    if not (payload.delete_slices or payload.restore_origin
+            or payload.restore_origin_only):
+        raise HTTPException(
+            status_code=400,
+            detail="没有勾选任何要执行的操作（删除切片 / 恢复原片名 / 恢复无切片原片名）")
 
     settings = config.load_settings()
     ffprobe = engine.find_bin("ffprobe")
@@ -66,6 +69,7 @@ def apply(payload: UndoApplyIn) -> UndoApplyOut:
         source_dir=settings["split"].get("sourceDir") or "origin",
         delete_slices=payload.delete_slices,
         restore=payload.restore_origin,
+        restore_origin_only=payload.restore_origin_only,
         trash=payload.trash,
         ffprobe=ffprobe)
 
@@ -73,6 +77,7 @@ def apply(payload: UndoApplyIn) -> UndoApplyOut:
         deleted=report["deleted"],
         trashed=report["trashed"],
         restored=report["restored"],
+        restored_orphans=report["restoredOrphans"],
         skipped=report["skipped"],
         freed_bytes=report["freedBytes"],
         problems=report["problems"],

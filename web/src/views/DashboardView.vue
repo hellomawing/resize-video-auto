@@ -45,7 +45,9 @@ async function doScan(): Promise<void> {
   scanning.value = true
   try {
     const r = await scanAll()
-    toast.success(`扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`)
+    // 用后端原话汇报：它会把「跳过了 N 个已处理文件、为什么跳过」一并说清。
+    // 前端另拼一句「发现 0 个视频」会把真正的原因盖掉，用户就无从判断了。
+    toast.success(r.message || `扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`)
     // 任务数会变化，稍后由 WS 或直接刷新统计
     await loadAll()
   } catch (e) {

@@ -27,6 +27,7 @@ import platform
 import re
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from . import splitter as engine
@@ -111,8 +112,13 @@ def verify_deletable(origin: Path, parts, size: int, total: int, ffprobe) -> dic
 def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin",
                 ffprobe=None) -> tuple:
     """
-    找出所有「切片 + 原片」组合，返回 (groups, orphans)。
-    groups 中每项含 ok/reason，供前端展示哪些能安全撤销。
+    找出所有「切片 + 原片」组合，返回 (groups, orphans, origin_only)。
+
+    * groups      切片和原片都在，可以撤销，含 ok/reason 供前端展示
+    * orphans     有切片但找不到原片——不知来路，不敢动
+    * origin_only 有 `#origin` 原片却一个切片都没有：已经撤销不动了，
+                  但它仍然必须被报出去，否则这个文件在界面上彻底隐身
+                  （扫描跳过它、撤销页又看不到它，只能 SSH 手工改名）
     """
     base_iter = folder.rglob("*") if recursive else folder.glob("*")
     files = []
@@ -124,6 +130,7 @@ def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin"
             continue
 
     originals = {}          # (base, suffix) -> Path
+    renamed = set()         # originals 里属于「同目录改名」形式的 key
     slices = {}             # (base, suffix) -> [(idx, Path)]
 
     for p in files:
@@ -135,6 +142,7 @@ def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin"
         if stem.endswith(ORIGIN_SUFFIX):
             key = (stem[: -len(ORIGIN_SUFFIX)], suffix)
             originals.setdefault(key, p)
+            renamed.add(key)
             continue
 
         # 2) 归档目录形式：origin/原名.ext
@@ -150,6 +158,7 @@ def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin"
             slices.setdefault(key, []).append((int(m.group("idx")), p))
 
     groups, orphans = [], []
+    paired = set()          # 已经成功配成组、进入 groups 的 key
     for key, parts in sorted(slices.items()):
         base, suffix = key
         parts = [p for _, p in sorted(parts, key=lambda x: x[0])]
@@ -157,6 +166,7 @@ def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin"
         if origin is None:
             orphans.extend(parts)
             continue
+        paired.add(key)
         size = origin.stat().st_size
         total = sum(p.stat().st_size for p in parts)
         verdict = verify_deletable(origin, parts, size, total, ffprobe)
@@ -176,7 +186,31 @@ def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin"
             "durationSum": verdict["dSum"],
         })
 
-    return groups, orphans
+    # 只有原片、没有切片的：把切片删掉或搬走后就会剩下这种残局。
+    # 它没有「可撤销」的内容，但用户必须能看到它 —— 这是他决定
+    # 「重新切一遍」还是「就这么留着」的依据。
+    origin_only = []
+    for key in sorted(renamed - paired):
+        origin = originals.get(key)
+        if origin is None:
+            continue
+        try:
+            st = origin.stat()
+        except OSError:
+            continue
+        origin_only.append({
+            # 键名和 UndoGroup 保持一致（都叫 origin），这样 restore_origin()
+            # 这一个函数能同时服务可撤销的组和只剩原片的组，不用写两套
+            "origin": str(origin),
+            "name": origin.name,
+            "base": key[0],
+            "suffix": key[1],
+            "size": st.st_size,
+            "mtime": datetime.fromtimestamp(st.st_mtime).astimezone(
+            ).isoformat(timespec="seconds"),
+        })
+
+    return groups, orphans, origin_only
 
 
 def _windows_recycle(path: Path) -> bool:
@@ -318,17 +352,23 @@ def restore_origin(group) -> str:
 
 def apply_undo(folder: Path, *, recursive: bool = True, source_dir: str = "origin",
                delete_slices: bool = True, restore: bool = True,
+               restore_origin_only: bool = False,
                trash: bool = True, ffprobe=None) -> dict:
     """
     真正执行撤销。返回结果报告。
 
     对校验不通过的组：切片一个都不删，但原片改名照做——改名不是破坏性操作，
     随时可以改回去；而切片缺失时还把原片留在 #origin 名下只会让目录更乱。
+
+    restore_origin_only 决定要不要顺手处理「切片已不在、只剩 #origin 原片」
+    的那些文件。默认关闭，因为恢复原名等于把它重新变回待处理的普通文件，
+    实时监听会立刻再切一遍——这是用户得自己点头的事，不能替他做。
     """
     folder = Path(folder)
-    groups, orphans = scan_groups(folder, recursive, source_dir, ffprobe)
+    groups, orphans, origin_only = scan_groups(folder, recursive, source_dir,
+                                               ffprobe)
 
-    deleted = restored = skipped = 0
+    deleted = restored = restored_orphans = skipped = 0
     trashed = 0
     freed = 0
     problems = []
@@ -404,6 +444,18 @@ def apply_undo(folder: Path, *, recursive: bool = True, source_dir: str = "origi
         details.append({"base": g["base"], "action": action or "noop",
                         "message": "；".join(msg)})
 
+    if restore_origin_only:
+        for item in origin_only:
+            r = restore_origin(item)
+            if r.startswith("原片已恢复"):
+                restored_orphans += 1
+                details.append({"base": item["base"], "action": "restored",
+                                "message": r})
+            else:
+                problems.append("%s %s" % (item["base"], r))
+                details.append({"base": item["base"], "action": "error",
+                                "message": r})
+
     if orphans:
         problems.append("%d 个孤儿切片未处理（找不到对应原片，为安全起见不动）"
                         % len(orphans))
@@ -412,6 +464,7 @@ def apply_undo(folder: Path, *, recursive: bool = True, source_dir: str = "origi
         "deleted": deleted,
         "trashed": trashed,
         "restored": restored,
+        "restoredOrphans": restored_orphans,
         "skipped": skipped,
         "freedBytes": freed,
         "problems": problems,
