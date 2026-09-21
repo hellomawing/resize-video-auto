@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import Modal from '../components/Modal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import DataTable from '../components/DataTable.vue'
@@ -203,9 +204,10 @@ const columns = [
   <div class="page">
     <div class="page-header">
       <div>
+        <RouterLink class="back-link" to="/watch">← 监控目录</RouterLink>
         <h1 class="page-title">撤销分割</h1>
         <div class="page-subtitle">
-          将切片合并还原为原片并清理切片。<strong>危险操作</strong>，执行前会二次确认，校验不通过的分组绝不会动。
+          删除切片，并把原片的名字改回去。<strong>危险操作</strong>，执行前会二次确认，校验不通过的分组绝不会动。
         </div>
       </div>
     </div>
@@ -382,6 +384,15 @@ const columns = [
 </template>
 
 <style scoped>
+.back-link {
+  display: inline-block;
+  margin-bottom: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+}
+.back-link:hover {
+  color: var(--color-primary);
+}
 .row-bad {
   background: var(--color-danger-soft);
 }

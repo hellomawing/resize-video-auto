@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import DataTable from '../components/DataTable.vue'
 import Toggle from '../components/Toggle.vue'
 import Modal from '../components/Modal.vue'
@@ -26,6 +27,7 @@ import type {
 
 const toast = useToast()
 const rescue = useScanRescue()
+const router = useRouter()
 
 interface FormState {
   path: string
@@ -323,7 +325,11 @@ const columns = [
           </template>
         </div>
       </div>
-      <button class="btn btn--primary" @click="openAdd">+ 新增监控目录</button>
+      <!-- 撤销分割是这一页的子页面（/watch/undo），入口只放在这里 -->
+      <div class="row">
+        <button class="btn" @click="router.push('/watch/undo')">撤销分割 →</button>
+        <button class="btn btn--primary" @click="openAdd">+ 新增监控目录</button>
+      </div>
     </div>
 
     <!--

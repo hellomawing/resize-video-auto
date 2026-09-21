@@ -5,12 +5,13 @@ import { useWebSocket } from '../composables/useWebSocket'
 // 左侧固定导航 + 实时连接状态指示
 const ws = useWebSocket()
 
+// 「撤销分割」不在这里单列 —— 它是「监控目录」的子页面，入口在那一页的右上角。
+// 路由是 /watch/undo，前缀匹配会让「监控目录」这一项在高亮时保持选中。
 const links = [
   { to: '/', label: '概览', icon: '◎' },
   { to: '/watch', label: '监控目录', icon: '📁' },
   { to: '/jobs', label: '任务队列', icon: '📋' },
   { to: '/settings', label: '设置', icon: '⚙' },
-  { to: '/undo', label: '撤销分割', icon: '↩' },
 ]
 </script>
 
