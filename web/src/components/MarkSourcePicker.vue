@@ -19,6 +19,11 @@ withDefaults(
     sourceDir?: string
     /** 「跟随」那一项的文案 */
     followLabel?: string
+    /**
+     * 「跟随」当前的落点，如「加 #origin 后缀留在原处」。
+     * 只有调用方知道上级设置是什么，所以由它算好传进来；不传就不显示。
+     */
+    followDetail?: string
     /** 隐藏「跟随」项：系统设置那一层没有上级可跟随，必须给个确定值 */
     hideFollow?: boolean
     disabled?: boolean
@@ -28,6 +33,7 @@ withDefaults(
   {
     sourceDir: '',
     followLabel: '跟随系统设置',
+    followDetail: '',
     hideFollow: false,
     disabled: false,
     compact: false,
@@ -86,6 +92,14 @@ function onDir(event: Event): void {
     </div>
     <div v-else-if="modelValue === 'move'" class="mark-hint">
       原片移到同级子文件夹，文件名不变
+    </div>
+    <!--
+      「跟随」不等于「不处理」，落到哪一种是用户真正关心的信息。
+      由调用方把上级设置的当前取值算好传进来（见 useMarkSource），
+      当场说明白，省得他为了确认一个结果还要跑去「设置」页对答案。
+    -->
+    <div v-else-if="!modelValue && !hideFollow && followDetail" class="mark-hint">
+      {{ followLabel }}：{{ followDetail }}
     </div>
   </div>
 </template>

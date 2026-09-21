@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import type { MarkValue, ScanOptions } from '../api/types'
+import { describeMark } from './useMarkSource'
 
 /** 一次「本次扫描怎么处理原片」的取值快照 */
 export interface ScanOverride {
@@ -49,18 +50,8 @@ export function useScanOverride() {
   }
 
   function describe(): string {
-    switch (mark.value) {
-      case 'rename':
-        return '加 #origin 后缀留在原处'
-      case 'move':
-        return `移到 ${dir.value || '归档子文件夹'}`
-      case 'none':
-        return '不处理原片'
-      case 'delete':
-        return '删除源文件'
-      default:
-        return '跟随各级设置'
-    }
+    // 措辞与「跟随系统设置」的落点说明共用一份，见 useMarkSource
+    return describeMark(mark.value, dir.value) || '跟随各级设置'
   }
 
   return { mark, dir, willDelete, take, reset, annotate }

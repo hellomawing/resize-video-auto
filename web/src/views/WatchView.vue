@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import DataTable from '../components/DataTable.vue'
 import Toggle from '../components/Toggle.vue'
 import Modal from '../components/Modal.vue'
@@ -13,6 +13,7 @@ import { getSettings } from '../api/settings'
 import { useToast } from '../composables/useToast'
 import { useScanRescue } from '../composables/useScanRescue'
 import { useScanOverride } from '../composables/useScanOverride'
+import { describeMark } from '../composables/useMarkSource'
 import { formatDateTime } from '../composables/useFormat'
 import type {
   MarkValue,
@@ -51,6 +52,17 @@ const emptyForm = (): FormState => ({
 const list = ref<WatchPoint[]>([])
 const loading = ref(true)
 const allowedRoots = ref<string[]>([])
+/**
+ * 系统设置里的默认原片处理方式。
+ * 表格行和新增/编辑弹窗里的「跟随系统设置」都要当场说明它会落到哪一种，
+ * 否则用户只能跑去「设置」页对答案。
+ */
+const systemMark = ref<MarkValue>('')
+const systemSourceDir = ref('')
+/** 「跟随系统设置」的落点说明；系统设置本身异常（取到空串）时留空，不显示 */
+const followDetail = computed(() =>
+  systemMark.value ? describeMark(systemMark.value, systemSourceDir.value) : '',
+)
 
 const formOpen = ref(false)
 const editingId = ref<string | null>(null)
@@ -79,6 +91,8 @@ async function load(): Promise<void> {
     const [wps, settings] = await Promise.all([listWatchpoints(), getSettings()])
     list.value = wps
     allowedRoots.value = settings.watch.allowedRoots
+    systemMark.value = settings.split.markSource
+    systemSourceDir.value = settings.split.sourceDir
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '加载监控目录失败')
   } finally {
@@ -355,6 +369,7 @@ const columns = [
               :model-value="wp.markSource"
               :source-dir="wp.sourceDir"
               follow-label="跟随系统设置"
+              :follow-detail="followDetail"
               :disabled="pending.has(wp.id)"
               compact
               @update:model-value="(v) => onMarkSource(wp, v)"
@@ -408,7 +423,11 @@ const columns = [
       </div>
       <div class="field">
         <label class="field-label">原片处理方式</label>
-        <MarkSourcePicker v-model="form.markSource" v-model:source-dir="form.sourceDir" />
+        <MarkSourcePicker
+          v-model="form.markSource"
+          v-model:source-dir="form.sourceDir"
+          :follow-detail="followDetail"
+        />
         <div class="field-hint">
           切分成功后怎么处置原片。留「跟随系统设置」就按系统设置里的默认值来；
           这里设了就以这里为准。
