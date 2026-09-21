@@ -9,6 +9,8 @@
   [2] 手动级     —— 同一次扫描带 delete 覆盖，原片真的没了
   [3] 系统级     —— 把目录设置清空回「跟随」，落回系统默认的 rename
   [4] 防重切     —— 已经归档走的原片不会被当成新视频再切一遍
+  [5] 老名字的排除 —— 归档目录名改掉/清空之后，老归档目录里的原片仍被排除
+                     （2026-09-21 在这里抓到过重复入队，是这条把缺陷钉死的）
 
 跑完会把系统设置、监控目录、临时文件、测试产生的任务记录都还原/清掉。
 
@@ -57,7 +59,8 @@ WP_ARCHIVE = "live-archive"
 #: 而「切完才处理原片」这个前提就不成立了，测了等于没测。
 SPLIT_SIZE = "2M"
 SETTLE = 5
-#: 三个用例各该产生一条任务记录，多出来就说明有文件被重复入队
+#: [1][2][3] 三个用例各该产生一条任务记录；[4][5] 是「不该有新任务」的用例，
+#: 所以本次跑下来总数就该是 3。多出来 = 有文件被重复入队了，按失败算。
 EXPECTED_JOBS = 3
 
 _passed = 0
@@ -372,9 +375,28 @@ def main() -> int:
             print("    （系统默认是 %s，不是 rename，这条跳过）"
                   % original["split"]["markSource"])
         check_true("原处不再有 case3.mp4", not exists("%s/case3.mp4" % TEST_DIR))
+
+        # ------------------------------------------------ [5] 老名字的排除
+        # 归档目录名刚刚被清空回「跟随系统」，按当前配置现算的话，
+        # live-archive 已经不在候选里了 —— 而 case1.mp4 就躺在里面且保留着原文件名。
+        # 只按配置现算的实现，会在这一步把它重新切一遍（2026-09-21 实测如此）。
+        print("\n[5] 老名字的排除：归档名清空后，%s/ 里的原片仍不该被重切" % WP_ARCHIVE)
+        _, before = call("GET", "/api/jobs?limit=1")
+        n_before = (before or {}).get("total", 0)
+        st, res = call("POST", "/api/watchpoints/%s/scan" % _wp_id)
+        _, after = call("GET", "/api/jobs?limit=1")
+        res = res or {}
+        check("没有新增任务", (after or {}).get("total", 0), n_before)
+        check("没有入队任何文件", res.get("queued"), 0)
+        reasons = [i.get("reason") for i in res.get("ignored") or []]
+        check_true("老归档目录里的原片仍被登记为「位于原片归档目录」",
+                   "位于原片归档目录" in reasons,
+                   "实际理由：%s" % (reasons or "（空）"))
+        check_true("%s/case1.mp4 还在原处（没被重切、也没被再标记一次）" % WP_ARCHIVE,
+                   exists("%s/%s/case1.mp4" % (TEST_DIR, WP_ARCHIVE)))
     finally:
         # ------------------------------------------------------ 收尾
-        print("\n[5] 收尾：还原设置、删监控目录、清测试文件与任务记录")
+        print("\n[6] 收尾：还原设置、删监控目录、清测试文件与任务记录")
         try:
             call("PUT", "/api/settings", original)
             print("    设置已还原（阈值 %s ｜ 稳定检测 %ss）"
@@ -386,12 +408,17 @@ def main() -> int:
             print("    监控目录 %s 已删" % _wp_id)
         ssh("rm -rf %s" % _shq(TEST_DIR))
         print("    测试目录已清空：%s" % TEST_DIR)
+        # 归档目录的使用记录是「只增不减」的（config.collect_archive_dirs），
+        # 所以本次用过的 %s 会留在容器的 /data/archive-dirs.json 里，删测试目录
+        # 也带不走它。这**不是**脏数据：它只让「恰好也叫这个名字的子目录」被跳过，
+        # 而且老原片还得靠它才不被重切。写出来只是免得日后看见文件里的人看不懂。
+        print("    提示：/data/archive-dirs.json 会留下 %s 这条使用记录（设计如此，"
+              "只增不减）" % WP_ARCHIVE)
         # 按集合差清理，而不是按脚本记下的 id：多入队的、预期的，一视同仁
         leftover = all_job_ids() - _baseline_jobs
-        # 三个用例各该产生一条，多出来的就是有文件被重复入队了。
-        # 这次真机上就撞到过：把监控目录的归档目录名清空后，原先那个名字
-        # 不再被排除，躺在里面的原片被重新切了一遍。不点出来的话，它只是
-        # 收尾日志里「4」和「3」的差别，很容易看漏。
+        # 三个用例各该产生一条，多出来的就是有文件被重复入队了 —— 那是**失败**，
+        # 不是提醒：被重复入队意味着原片被重切了一遍（真机上撞到过：把监控目录的
+        # 归档目录名清空后，原先那个名字不再被排除，躺在里面的原片被重新切了）。
         # 明细必须在**删之前**取 —— 删完再查就只剩 404 了。
         extra = []
         if len(leftover) > EXPECTED_JOBS:
@@ -404,13 +431,14 @@ def main() -> int:
             gone += 1 if st in (200, 204) else 0
         print("    本次新增的 %d 条任务记录已清理" % gone)
         if extra:
-            print("    [警告] 产生了 %d 条任务，比预期的 %d 条多 %d 条："
+            _failed += 1
+            print("    [失败] 产生了 %d 条任务，比预期的 %d 条多 %d 条："
                   % (len(leftover), EXPECTED_JOBS, len(leftover) - EXPECTED_JOBS))
             for jid, src in extra:
                 print("      %s  %s" % (jid, src))
-            print("      多出来的通常是「本该被排除的文件被重新入队」——"
-                  "排查方向：collect_archive_dirs 建出来的排除集里，"
-                  "是不是少了某个正在用的归档目录名")
+            print("      多出来的就是「本该被排除的文件又被入队了」——原片被重切了一遍。"
+                  "排查方向：collect_archive_dirs 的排除集里漏了某个**用过的**归档"
+                  "目录名（data/archive-dirs.json 里记着）。")
         still = all_job_ids() - _baseline_jobs
         if still:
             print("    [注意] 还有 %d 条没删掉，请手动处理：%s"

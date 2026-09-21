@@ -8,8 +8,9 @@ app/config.py —— 配置与数据文件的位置、读写
     watchpoints.json  监控目录列表
     schedules.json    定时任务列表
     video-splitter.db SQLite：任务与日志
+    archive-dirs.json 用过的归档子目录名（只增不减，见 collect_archive_dirs）
 
-为什么用 JSON 而不是全塞进 SQLite：这三个配置项都是「人能看懂、能手改、
+为什么用 JSON 而不是全塞进 SQLite：这几个配置项都是「人能看懂、能手改、
 能直接备份走」的东西，用 JSON 更友好；只有任务流水这种量大且需要按条件
 查询的数据才值得进数据库。
 """
@@ -34,6 +35,8 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 WATCHPOINTS_PATH = DATA_DIR / "watchpoints.json"
 SCHEDULES_PATH = DATA_DIR / "schedules.json"
 DB_PATH = DATA_DIR / "video-splitter.db"
+# 「用过的归档子目录名」的记录，见 collect_archive_dirs
+ARCHIVE_DIRS_PATH = DATA_DIR / "archive-dirs.json"
 
 # ---------------------------------------------------------------- 原片处理方式
 
@@ -95,11 +98,19 @@ DEFAULT_SETTINGS = {
 
 _lock = threading.RLock()
 
+# 「用过的归档目录名」的进程内缓存。None = 还没从磁盘读过一次；
+# 之后以内存为准（所以手工改 archive-dirs.json 要重启才生效）。
+_known_dirs = None
+
 
 # ---------------------------------------------------------------- 通用读写
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _log(msg: str) -> None:
+    print("[config] %s" % msg, flush=True)
 
 
 def _atomic_write(path: Path, payload) -> None:
@@ -402,15 +413,82 @@ def resolve_mark_policy(settings: dict, watchpoint: dict = None,
     return out
 
 
+def load_known_archive_dirs() -> set:
+    """
+    曾经被当作归档目录用过的名字，供扫描排除。
+
+    名字在这里是**不透明字符串**：只去掉首尾空白，不做 normalize_source_dir。
+    原因是归一化会把历史名 `origin` 折成新默认名，而 `origin/` 目录里的老原片
+    正是靠这个名字才被排除的（见 normalize_source_dir 的说明）。
+    归档目录名只参与**比较**、从不拼进路径，所以没有必须归一化的理由；
+    真正要归一化的是配置里那些值，那一步在 collect_archive_dirs 里做。
+
+    文件不存在或损坏时返回空集：这顶多是「这一次少排除几个名字」，
+    不能让扫描因为一个辅助文件读不出来就卡住。原文件留在原地供人工排查。
+    """
+    global _known_dirs
+    with _lock:
+        if _known_dirs is None:
+            raw = _read_json(ARCHIVE_DIRS_PATH, [])
+            if not isinstance(raw, list):
+                raw = []
+            _known_dirs = {v.strip() for v in raw
+                           if isinstance(v, str) and v.strip()}
+        return set(_known_dirs)
+
+
+def remember_archive_dirs(names) -> set:
+    """
+    记下归档目录名，持久化成**只增不减**的集合，返回合并后的全集。
+
+    调用方直接拿返回值去排除即可，不必再读一次盘。名字按原样存，
+    不归一化——理由见 load_known_archive_dirs。
+
+    没有新名字时不写盘：这个函数落在扫描热路径上（每轮轮询、每次扫描都会走到），
+    每次都重写一遍文件没有意义，只会让 mtime 不停变。
+    """
+    global _known_dirs
+    with _lock:
+        known = load_known_archive_dirs()
+        fresh = {n.strip() for n in (names or ())
+                 if isinstance(n, str) and n.strip()}
+        if not fresh - known:
+            return known
+        merged = known | fresh
+        try:
+            _atomic_write(ARCHIVE_DIRS_PATH, sorted(merged))
+        except OSError as exc:
+            # 写不进去不致命，但会退回「改过名就不再排除」的老毛病（会重切原片），
+            # 所以要说出来。**不更新内存缓存**，下次扫描还会再试一次。
+            _log("归档目录使用记录写盘失败：%s" % exc)
+            return merged
+        _known_dirs = merged
+        return merged
+
+
 def collect_archive_dirs(settings: dict = None, watchpoints=None,
                          extra=None) -> set:
     """
     列出所有「可能被当作归档目录」的名字，供扫描排除使用。
 
+    四个来源：
+      1. 当前配置——系统设置里的默认名 + 各监控目录分别设置的名字
+      2. 本次手动指定的名字（extra）
+      3. 历史默认名（origin）
+      4. **曾经用过的名字**（archive-dirs.json，只增不减）
+
     为什么是个集合而不是单个名字：归档目录可以按监控目录分别设置，
     A 目录用 `origin`、B 目录用别的名字；扫描 A 时如果不把 B 的名字也排除掉，
-    那些被 move 走的原片就会被当成新视频再切一遍。历史默认名同样要算进来
-    ——改名之前搬进去的文件还躺在那些目录里。
+    那些被 move 走的原片就会被当成新视频再切一遍。
+
+    为什么第 4 类要落盘：前 3 类都按**当前配置现算**，名字一改就掉出集合；
+    而 move 归档过去的原片**保留原文件名**，掉出去看起来就是个新视频 ——
+    会被重切一遍再标记一次（2026-09-21 真机可复现）。
+
+    方向刻意偏向「多排除」：多排除顶多漏扫一个目录（扫描结果里会写明
+    「位于原片归档目录」），漏排除却会让原片和切片一起报废。代价是集合只增不减 ——
+    真想让某个名字放行，只能手工编辑 archive-dirs.json 并重启服务
+    （进程内有一份缓存，改文件不会立刻生效）。
     """
     names = set(LEGACY_SOURCE_DIRS)
     if settings is None:
@@ -428,4 +506,6 @@ def collect_archive_dirs(settings: dict = None, watchpoints=None,
         if isinstance(raw, str) and raw.strip():
             names.add(normalize_source_dir(raw))
 
-    return {n for n in names if n}
+    # 用过即记住：这一轮算出来的名字落盘，下一轮即便配置里已经没有它们了，
+    # 旧归档目录里的原片也仍然会被排除
+    return remember_archive_dirs({n for n in names if n})

@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -311,6 +312,11 @@ def check_scan_excludes_archive(tmp: Path) -> None:
     check_true("系统设置里的名字在排除集里", "sys-archive" in arch, sorted(arch))
     check_true("监控目录用的名字也在（换个目录扫时同样要排除）",
                "wp-archive" in arch, sorted(arch))
+    # 排除集里还混着「用过的名字」的历史记录（见 [10]），所以上面两条单独看已经
+    # 证明不了「按当前配置现算」这条路还通——用一个全新的名字单独钉一下
+    check_true("当前配置里新写的名字会立刻进排除集",
+               "sys-archive-8" in config.collect_archive_dirs(
+                   {"split": {"sourceDir": "sys-archive-8"}}, []))
 
     # move 模式下原片会带着原文件名躺进归档目录
     (tmp / "wp-archive").mkdir(exist_ok=True)
@@ -414,6 +420,78 @@ def check_relative_archive_scope(tmp: Path) -> None:
           ("skipped", "位于原片归档目录"))
 
 
+def check_archive_dirs_persist(tmp: Path) -> None:
+    """
+    [10] 用过的归档目录名要落盘、只增不减。
+
+    `move` 模式归档过去的原片**保留原文件名**。排除集如果只按当前配置现算，
+    名字一改（或清空回「跟随系统」）它就从集合里掉出去，躺在旧归档目录里的原片
+    会被当成新视频重切一遍再标记一次 —— 2026-09-21 真机可稳定复现：
+    清空监控目录的 sourceDir 后，本次扫描多入队一条 src 指向 live-archive/ 的任务。
+    """
+    print("\n[10] 用过的归档目录名：落盘、只增不减")
+
+    sfile = config.ARCHIVE_DIRS_PATH
+    check_true("记录文件落在数据目录里",
+               str(sfile).startswith(str(config.DATA_DIR)), str(sfile))
+
+    # 只在这一节里出现的名字，免得被前面对用例写进去的记录干扰
+    used, newer = "once-move-a", "once-move-b"
+    base = {"split": {"sourceDir": config.DEFAULT_SOURCE_DIR}}
+    wp_with = lambda name: [{"id": "w", "sourceDir": name}]      # noqa: E731
+
+    first = config.collect_archive_dirs(base, wp_with(used))
+    check_true("用过的名字进了排除集", used in first, sorted(first))
+
+    second = config.collect_archive_dirs(base, wp_with(newer))
+    check_true("改名字之后，老名字仍被排除", used in second, sorted(second))
+    check_true("新名字也在", newer in second, sorted(second))
+
+    third = config.collect_archive_dirs(base, wp_with(""))
+    check_true("清空回「跟随系统」后，老名字仍被排除", used in third, sorted(third))
+
+    saved = json.loads(sfile.read_text(encoding="utf-8"))
+    check_true("已落盘成 archive-dirs.json",
+               isinstance(saved, list) and used in saved and newer in saved, saved[:8])
+
+    # 这个函数在扫描热路径上（每轮轮询、每次扫描都会走到），没新名字就别动文件
+    before = os.stat(sfile).st_mtime_ns
+    config.collect_archive_dirs(base, wp_with(used))
+    check("没有新名字时不动文件", os.stat(sfile).st_mtime_ns, before)
+
+    # 对照：当初的缺陷正是「只按当前配置现算」，老名字根本不在候选里
+    from_current = set(config.LEGACY_SOURCE_DIRS) | {
+        config.normalize_source_dir(base["split"]["sourceDir"])}
+    check_true("（对照）只按当前配置现算，老名字已经不在候选里",
+               used not in from_current, sorted(from_current))
+
+    # 反过来也要保证：持久化没有把「按当前配置现算」这条路盖掉
+    fresh_name = "brand-new-archive"
+    check_true("配置里新写的名字立刻就生效",
+               fresh_name in config.collect_archive_dirs(
+                   {"split": {"sourceDir": fresh_name}}, []))
+
+    # 落到磁盘上的真实效果：旧归档目录里的原片不再被当成新视频
+    root = tmp / "persist" / "inbox"
+    (root / used).mkdir(parents=True, exist_ok=True)
+    (root / "demo.mp4").write_bytes(b"\x00" * 4096)
+    (root / used / "archived.mp4").write_bytes(b"\x00" * 4096)
+    config.save_settings({"split": {"markSource": "move",
+                                    "sourceDir": config.DEFAULT_SOURCE_DIR}})
+    config.save_watchpoints([{"id": "wp-persist", "path": str(root),
+                              "scanMode": "manual"}])
+    spec = scanner.build_spec(config.load_settings())
+    spec["threshold"] = 1        # 用例造的是几 KB 的小文件，见 [8] 的说明
+    spec["min_size"] = 0
+    check("旧归档目录里的原片被排除（不会再重切一遍）",
+          scanner.consider_file(root / used / "archived.mp4", spec, "manual",
+                                roots=[root]),
+          ("skipped", "位于原片归档目录"))
+    check_true("同一个目录下的普通文件照常处理",
+               scanner.consider_file(root / "demo.mp4", spec, "manual",
+                                     roots=[root])[0] in ("queued", "waiting"))
+
+
 def main() -> int:
     db.init_db()
     tmp = Path(tempfile.mkdtemp(prefix="vs-mark-"))
@@ -427,6 +505,7 @@ def main() -> int:
         check_retry_keeps_snapshot(job)
         check_scan_excludes_archive(tmp)
         check_relative_archive_scope(tmp)
+        check_archive_dirs_persist(tmp)
     finally:
         db.close_db()
         shutil.rmtree(tmp, ignore_errors=True)
