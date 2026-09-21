@@ -10,7 +10,7 @@ video_splitter.py —— 大视频无损分割工具（Windows / macOS / Linux �
 
 两种使用方式：
     交互模式：不带任何路径直接运行（或加 -i），会逐项询问文件夹、分割阈值、
-              切割模式、原文件处理方式等，每步回车即用推荐值。
+              原文件处理方式等，每步回车即用推荐值。
     命令行模式：直接给出路径和参数，适合写进脚本或批处理重复执行。
 
 两种定段方式（决定「每片切多长」）：
@@ -21,16 +21,11 @@ video_splitter.py —— 大视频无损分割工具（Windows / macOS / Linux �
             若因码率波动导致某片超过体积阈值，会自动缩小秒数重试，
             并在日志里写明实际用的秒数。
 
-两种切割模式（决定「怎么切」）：
-    bytes  纯二进制切割：逐字节原样拆分，零依赖、速度极快。
-           特点：所有片段按编号顺序拼接即可 100% 还原原文件；
-                 缺点是 MP4/MOV 等格式的第 2 段及之后无法单独双击播放
-                 （文件头只在第一段里）。
-    copy   FFmpeg 流拷贝（-c copy）：按关键帧重新封装，不重新编码。
-           特点：每一段都能单独播放；画质音质同样零损失；
-                 需要本机已安装 ffmpeg。
-
-    默认 auto：检测到 ffmpeg 就用 copy，否则自动回退到 bytes。
+切割方式只有一种：
+    FFmpeg 流拷贝（-c copy）：按关键帧重新封装，不重新编码。
+    特点：每一段都能单独播放；画质音质零损失；需要本机已安装 ffmpeg。
+    （历史版本的 bytes 纯字节切割与 auto 自动降级已删除——bytes 的产物
+    第 2 段起播不了，auto 还会在用户不知情时静默降级，都已不再提供。）
 
 关于 ffmpeg：
     脚本会先在 PATH 里找 ffmpeg，找不到再翻各平台常见安装位置
@@ -39,6 +34,7 @@ video_splitter.py —— 大视频无损分割工具（Windows / macOS / Linux �
     全都没有时，交互模式会问一句「要不要自动下载安装」，
     也可以直接加 --install-ffmpeg。装的是官方下载页推荐的静态构建，
     只解压到脚本目录下的 ffmpeg/ 里，不写系统目录、不改 PATH。
+    没有 ffmpeg 就切不了——不再有别的兜底模式。
 
 关于大疆（DJI）等运动相机的 MP4（重要）：
     这类文件除了主视频和音频，还塞了 djmd / dbgi / tmcd 三个 data 流和
@@ -46,15 +42,14 @@ video_splitter.py —— 大视频无损分割工具（Windows / macOS / Linux �
     跳过它们，只保留主视频+音频，否则 ffmpeg 会直接报
     "Could not find tag for codec none in stream #2" 而整体失败。
     这些附加流是相机自己的遥测数据（含拍摄定位/运动记录），
-    想要一个字节都不丢，请用 bytes 模式——那是逐字节复制，原样保留。
+    跳过只影响这些私有遥测数据，视频和音频本体不受影响。
 
 关于 copy 模式保留不了的东西（实话实说）：
-    * 上面那类容器装不下的附加流会被跳过。
+    * 上面那类容器装不下的附加流会被跳过（只记警告，不算失败）。
     * 容器标签里的 encoder 会被 ffmpeg 强行写成 "Lavf x.x"（大疆的原值是
       "DJI OsmoAction4"）。这条实测无解：-metadata、-fflags +bitexact、
       原生标签名、换容器全试过，要么被覆盖要么直接消失。
     除此之外，creation_time / location / make / model 等标签都能带过去。
-    对「一个字节都不能变」的极端要求，bytes 模式才是正解。
 
 日志与调试：
     默认会把控制台输出同时写进脚本目录下的 video_splitter_log.txt，
@@ -101,12 +96,12 @@ from pathlib import Path
 # ---------------------------------------------------------------- 基础常量
 
 DEFAULT_THRESHOLD = "3.9G"          # 默认分割阈值（比 FAT32 的 4GiB 上限留约 100MB 余量）
-BUF_SIZE = 8 * 1024 * 1024          # 读写缓冲 8MB
 
-# 默认处理的视频扩展名
+# 默认处理的视频扩展名：只认 ffmpeg 能无损流拷贝分段的 8 种容器。
+# 旧配置/旧命令行里的其它后缀（avi / wmv / flv ...）会被直接忽略——
+# 不是不认识它们，是它们没法在「每段都能独立播放」的前提下无损切分。
 DEFAULT_EXTS = (
-    ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv",
-    ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".rmvb", ".vob",
+    ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".ts", ".m2ts", ".mts",
 )
 
 # 这些格式适合用 ffmpeg segment 流拷贝（按关键帧切分后每段仍可独立播放）
@@ -589,15 +584,15 @@ def ensure_ffmpeg(args, allow_prompt: bool = False):
     """
     返回 (ffmpeg, ffprobe)。缺失时按需自动下载安装。
     非交互场景（脚本调用、-y、--no-install-ffmpeg）绝不擅自联网下载。
+    注意：本工具只有 ffmpeg 流拷贝一条路，缺了 ffmpeg 就什么也做不了。
     """
     ffmpeg, ffprobe = find_bin("ffmpeg"), find_bin("ffprobe")
     if ffmpeg and ffprobe:
         return ffmpeg, ffprobe
 
     log("")
-    log("环境检查  ：未检测到 ffmpeg。")
-    log("            ffmpeg 只在「流拷贝模式」下需要（好处是每段都能单独播放）；")
-    log("            「纯字节切割模式」不需要它，同样无损、速度更快。")
+    log("环境检查  ：未检测到 ffmpeg。本工具只做 ffmpeg 无损流拷贝，")
+    log("            没有 ffmpeg 就无法切割（旧版的字节切割兜底已删除）。")
 
     if getattr(args, "no_install_ffmpeg", False):
         return ffmpeg, ffprobe
@@ -614,12 +609,12 @@ def ensure_ffmpeg(args, allow_prompt: bool = False):
         do_install = answer.strip().lower() not in ("n", "no")
 
     if not do_install:
-        log("            已跳过安装，将使用纯字节切割模式。")
+        log("            已跳过安装，本次无法切割。")
         return ffmpeg, ffprobe
 
     if install_ffmpeg():
         return find_bin("ffmpeg"), find_bin("ffprobe")
-    log("            安装未完成，本次将使用纯字节切割模式。")
+    log("            安装未完成，本次无法切割。")
     return ffmpeg, ffprobe
 
 
@@ -711,56 +706,7 @@ def precheck_targets(paths, overwrite: bool) -> None:
             raise RuntimeError("目标文件已存在：%s（加 --overwrite 覆盖，或先删除旧切片）" % p)
 
 
-def split_by_bytes(src: Path, threshold: int, outdir: Path,
-                   dry_run: bool, overwrite: bool):
-    """
-    纯二进制切割：把文件均分成 n 段，保证每段 <= threshold，且 n 最小。
-    不重新编码，不做任何字节改写，拼接即可还原原文件。
-    """
-    size = src.stat().st_size
-    n = max(1, math.ceil(size / threshold))
-    per = math.ceil(size / n)          # 均分后每段字节数，必定 <= threshold
-
-    stem, suffix = src.stem, src.suffix
-    planned = [(outdir / ("%s#%d%s" % (stem, i, suffix)), per) for i in range(1, n + 1)]
-
-    if dry_run:
-        return planned, "bytes"
-
-    precheck_targets([p for p, _ in planned], overwrite)
-
-    produced = []
-    try:
-        with open(src, "rb") as fin:
-            for path, want in planned:
-                if path.exists() and not overwrite:
-                    raise RuntimeError("目标文件已存在：%s（加 --overwrite 覆盖）" % path)
-                written = 0
-                with open(path, "wb") as fout:
-                    while written < want:
-                        chunk = fin.read(min(BUF_SIZE, want - written))
-                        if not chunk:
-                            break
-                        fout.write(chunk)
-                        written += len(chunk)
-                produced.append((path, written))
-    except Exception:
-        for path, _ in produced:
-            try:
-                path.unlink()
-            except Exception:
-                pass
-        raise
-
-    # 校验：各段之和必须等于原文件大小
-    total = sum(w for _, w in produced)
-    if total != size:
-        raise RuntimeError("切割校验失败：合计 %d 字节，原文件 %d 字节" % (total, size))
-
-    return [(p, w) for p, w in produced], "bytes"
-
-
-# ---------------------------------------------------------------- 模式二：ffmpeg 流拷贝
+# ---------------------------------------------------------------- ffmpeg 流拷贝
 
 class FatalSplitError(RuntimeError):
     """重试也不可能成功的错误（容器不支持、目标文件冲突等），直接往外抛。"""
@@ -792,7 +738,8 @@ def split_by_ffmpeg(src: Path, threshold: int, outdir: Path, dry_run: bool,
     ext = src.suffix.lower()
     seg_format = SEGMENT_FRIENDLY.get(ext)
     if not seg_format:
-        raise RuntimeError("该格式不适合流拷贝分段")
+        raise RuntimeError("该格式不支持无损切分：%s（支持 %s）"
+                           % (ext or "?", " ".join(sorted(SEGMENT_FRIENDLY))))
 
     duration = probe_duration(src, ffprobe)
     if duration <= 0:
@@ -818,8 +765,7 @@ def split_by_ffmpeg(src: Path, threshold: int, outdir: Path, dry_run: bool,
         desc = "、".join(sorted(set(p for p in parts if p))) or "附加流"
         log("       源文件含 mp4 装不下的附加流（%s），流拷贝会跳过它们。" % desc)
         log("       这类流一般是相机自带的遥测数据（大疆的 djmd 就含着拍摄")
-        log("       定位/运动记录），以及视频缩略图。")
-        log("       想一个字节都不丢，请改用 --mode bytes（逐字节复制，原样保留）。")
+        log("       定位/运动记录），以及视频缩略图；视频和音频本体不受影响。")
     else:
         mapping = ["-map", "0"]
     allow_mapping_fallback = mapping != restricted
@@ -1116,8 +1062,6 @@ def build_parser() -> argparse.ArgumentParser:
   python video_splitter.py D:\\Videos --seconds 600     # 每 10 分钟一片
   python video_splitter.py D:\\Videos -t 300 --all      # 每 5 分钟一片，所有视频都切
   python video_splitter.py D:\\Videos -t 300 --debug    # 按秒切 + 详细调试信息
-  python video_splitter.py D:\\Videos --mode bytes      # 纯字节切割，不需要 ffmpeg
-  python video_splitter.py D:\\Videos --mode copy       # 每段都能单独播放
   python video_splitter.py D:\\Videos --dry-run         # 只预览，不实际切割
   python video_splitter.py D:\\Videos --mark-source move # 原片移到 origin/ 文件夹
   python video_splitter.py D:\\Videos --mark-source none # 原片原地不动
@@ -1134,9 +1078,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="按时间切分：每片的目标秒数（300 = 每 5 分钟一片，"
                         "600 = 每 10 分钟一片）。给了它就按秒切，不再按大小均分。"
                         "若切出来有片段超过 --size，会自动把秒数按比例缩小后重试")
-    p.add_argument("-m", "--mode", choices=("auto", "bytes", "copy"), default="auto",
-                   help="切割模式：auto=有 ffmpeg 用 copy 否则 bytes（默认）；"
-                        "bytes=纯字节切割；copy=ffmpeg 流拷贝")
+    p.add_argument("-m", "--mode", choices=("copy",), default="copy",
+                   help=argparse.SUPPRESS)
     p.add_argument("-o", "--outdir", default=None,
                    help="切片输出目录，默认与源文件同目录")
     p.add_argument("--ext", default=",".join(DEFAULT_EXTS),
@@ -1165,7 +1108,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--install-ffmpeg", action="store_true",
                    help="未检测到 ffmpeg 时自动下载静态版并安装到脚本目录")
     p.add_argument("--no-install-ffmpeg", action="store_true",
-                   help="禁止自动下载安装 ffmpeg（缺了就只用纯字节切割）")
+                   help="禁止自动下载安装 ffmpeg（缺了就直接退出，不做任何处理）")
     p.add_argument("--log", nargs="?", const="video_splitter_log.txt", default=None,
                    help="把输出同时写入日志文件（默认就开启，默认文件名 "
                         "video_splitter_log.txt；不想要就用 --no-log）")
@@ -1179,8 +1122,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 # ---------------------------------------------------------------- 执行主体
 
-def run_processing(args, folders, threshold: int, mode: str,
-                   ffmpeg, ffprobe) -> int:
+def run_processing(args, folders, threshold: int, ffmpeg, ffprobe) -> int:
     """执行「扫描 -> 切割 -> 标记原文件 -> 汇总」，返回退出码。"""
     exts = tuple(e.strip().lower() for e in args.ext.split(",") if e.strip())
     exts = tuple(e if e.startswith(".") else "." + e for e in exts)
@@ -1198,12 +1140,10 @@ def run_processing(args, folders, threshold: int, mode: str,
         log("处理范围   ：全部视频文件（--all，不按大小筛选）")
     else:
         log("大小阈值   ：%s（%d 字节）—— 决定哪些文件需要切" % (args.size, threshold))
-    log("切割模式   ：%s%s" % (mode, "（纯字节，零依赖）" if mode == "bytes"
-                            else "（ffmpeg 流拷贝，每段可独立播放）"))
-    if mode == "copy":
-        log("ffmpeg     ：%s" % (ffmpeg or "未找到"))
-        if ffprobe and DEBUG_MODE:
-            log("ffprobe    ：%s" % ffprobe)
+    log("切割方式   ：ffmpeg 无损流拷贝（-c copy），每段可独立播放")
+    log("ffmpeg     ：%s" % (ffmpeg or "未找到"))
+    if ffprobe and DEBUG_MODE:
+        log("ffprobe    ：%s" % ffprobe)
     log("子目录     ：%s" % ("否" if args.no_recursive else "是"))
     log("元数据     ：%s" % ("保留（容器标签 + 文件时间戳）"
                             if args.keep_metadata else "不保留容器标签"))
@@ -1221,12 +1161,11 @@ def run_processing(args, folders, threshold: int, mode: str,
         log("预览模式   ：不会写入任何文件")
     if DEBUG_MODE:
         log("调试模式   ：开启（输出 ffmpeg 完整命令与流布局）")
-    if mode == "copy" and not ffmpeg:
-        log("警告       ：未找到 ffmpeg，将改用纯字节切割模式")
-        mode = "bytes"
-    if mode == "bytes" and args.seconds:
-        log("警告       ：bytes 是逐字节均分，做不到「按时间切分」，")
-        log("             --seconds 会被忽略。想按秒切请用 --mode copy。")
+    if not (ffmpeg and ffprobe):
+        log("错误       ：未找到 ffmpeg/ffprobe，无法切割。")
+        log("             先装 ffmpeg（可加 --install-ffmpeg），或重跑时去掉 --no-install-ffmpeg。")
+        log("-" * 68)
+        return 2
     log("-" * 68)
 
     if DEBUG_MODE:
@@ -1303,33 +1242,12 @@ def run_processing(args, folders, threshold: int, mode: str,
         log("[%d/%d] %s" % (idx, len(targets), src.name))
         log("       原大小：%s" % human_size(size))
 
-        used_mode = mode
         t0 = time.time()
         try:
-            if mode == "copy":
-                try:
-                    produced, used_mode = split_by_ffmpeg(
-                        src, threshold, outdir, args.dry_run,
-                        args.overwrite, ffmpeg, ffprobe, args.keep_metadata,
-                        seg_seconds=args.seconds)
-                except Exception as exc:      # noqa: BLE001
-                    if "目标文件已存在" in str(exc):
-                        raise                # 这类冲突回退也没用，直接报错更安全
-                    if args.seconds:
-                        # 你明确指定了按秒切分，就绝不偷偷降级成字节切割——
-                        # 否则产物和预期完全不符，还会让人误以为用了 ffmpeg。
-                        log("       ！按秒切分失败：%s" % exc)
-                        log("       ！未回退为字节切割（因为你指定了按秒切分）。")
-                        log("       ！加 --debug 可看到 ffmpeg 的完整命令与报错原文。")
-                        log("       ！确实想用字节切割，请显式加 --mode bytes。")
-                        raise
-                    log("       流拷贝失败（%s），回退为纯字节切割。" % exc)
-                    log("       想看失败原因，加 --debug 重跑即可看到 ffmpeg 报错原文。")
-                    produced, used_mode = split_by_bytes(
-                        src, threshold, outdir, args.dry_run, args.overwrite)
-            else:
-                produced, used_mode = split_by_bytes(
-                    src, threshold, outdir, args.dry_run, args.overwrite)
+            produced, _ = split_by_ffmpeg(
+                src, threshold, outdir, args.dry_run,
+                args.overwrite, ffmpeg, ffprobe, args.keep_metadata,
+                seg_seconds=args.seconds)
 
             for path, w in produced:
                 if not args.dry_run:
@@ -1348,7 +1266,7 @@ def run_processing(args, folders, threshold: int, mode: str,
             if not args.dry_run:
                 # 核对「各切片时长之和 vs 原片时长」——确认时间轴上没丢内容。
                 # 流拷贝按关键帧切分，每段末尾会多包一个 GOP，所以总和略大属正常。
-                if used_mode == "copy" and ffprobe and len(produced) > 1:
+                if ffprobe and len(produced) > 1:
                     d_src = probe_duration(src, ffprobe)
                     d_parts = [probe_duration(p, ffprobe) for p, _ in produced]
                     if d_src > 0 and all(d > 0 for d in d_parts):
@@ -1358,8 +1276,8 @@ def run_processing(args, folders, threshold: int, mode: str,
                             % (format_duration(sum(d_parts)), format_duration(d_src),
                                gap, "（关键帧对齐的正常偏差）" if ok
                                else "  ⚠ 偏差偏大，请用 --debug 复核"))
-                log("       完成：%d 段，用时 %.1f 秒，模式 %s" %
-                    (len(produced), time.time() - t0, used_mode))
+                log("       完成：%d 段，用时 %.1f 秒" %
+                    (len(produced), time.time() - t0))
                 if args.delete_source:
                     try:
                         src.unlink()
@@ -1387,13 +1305,9 @@ def run_processing(args, folders, threshold: int, mode: str,
     log("处理完成：成功 %d 个文件，失败 %d 个；共产生 %d 段，%s %s。"
         % (ok_count, fail_count, total_parts,
            "预计产生" if args.dry_run else "共产生", human_size(total_bytes)))
-    if mode == "copy" and ok_count and not args.dry_run:
+    if ok_count and not args.dry_run:
         log("切分方式   ：ffmpeg 流拷贝（-c copy），未重新编码，画质音质无损")
         log("每段可播放 ：是（可单独双击）")
-    if mode == "bytes" and ok_count:
-        log("提示：纯字节切割的第 2 段及之后需要合并后才能播放；")
-        log("      合并命令（macOS/Linux）：cat 原名#1.mp4 原名#2.mp4 > 原名.mp4")
-        log("      合并命令（Windows cmd）：copy /b 原名#1.mp4+原名#2.mp4 原名.mp4")
     log("=" * 68)
     if LOG_PATH:
         log("")
@@ -1466,12 +1380,12 @@ def describe_mark(mark_source: str, source_dir_name: str) -> str:
     }.get(mark_source, mark_source)
 
 
-def interactive_wizard(args, ffmpeg_ok: bool):
+def interactive_wizard(args):
     """问答式收集配置。返回配置 dict；用户取消则返回 None。"""
     global WIZARD_ACTIVE
     WIZARD_ACTIVE = True
     try:
-        return _wizard_impl(args, ffmpeg_ok)
+        return _wizard_impl(args)
     except WizardCancelled:
         log("已取消，未做任何改动。")
         return None
@@ -1479,7 +1393,7 @@ def interactive_wizard(args, ffmpeg_ok: bool):
         WIZARD_ACTIVE = False
 
 
-def _wizard_impl(args, ffmpeg_ok: bool):
+def _wizard_impl(args):
     """问答式收集配置的实际实现，取消由 interactive_wizard 统一接住。"""
     log("")
     log("=" * 68)
@@ -1487,11 +1401,11 @@ def _wizard_impl(args, ffmpeg_ok: bool):
     log("=" * 68)
     log("每一步直接回车即可使用推荐值，输入 q 可随时取消。")
 
-    # [1/7] 文件夹
+    # [1/6] 文件夹
     folders = []
     while not folders:
         log("")
-        log("[1/7] 要处理的文件夹")
+        log("[1/6] 要处理的文件夹")
         log("    把文件夹拖进窗口，或粘贴路径（多个用空格分隔）")
         log("    直接回车 -> 弹出图形化选择框")
         raw = ask("    路径：")
@@ -1510,11 +1424,11 @@ def _wizard_impl(args, ffmpeg_ok: bool):
         folders = valid
     log("    已选择：%s" % "、".join(str(f) for f in folders))
 
-    # [2/7] 切分方式：按大小 还是 按时间
+    # [2/6] 切分方式：按大小 还是 按时间
     log("")
     if args.seconds:
         log("（命令行已指定 --seconds %g，下面默认选中「按时间」）" % args.seconds)
-    key = ask_menu("[2/7] 按什么切分", [
+    key = ask_menu("[2/6] 按什么切分", [
         ("1", "按大小", "每片体积不超过阈值（适合「每片都要小于 4G」这类硬限制）"),
         ("2", "按时间", "每片固定秒数，例如每 5 分钟一段（片段时长整齐）"),
     ], "2" if args.seconds else "1")
@@ -1592,24 +1506,11 @@ def _wizard_impl(args, ffmpeg_ok: bool):
         all_files = ask("    对所有视频切分（不只看超大文件）？[y/N]：",
                         "y" if args.all else "n").lower() in ("y", "yes")
 
-    # [3/7] 切割模式
-    if ffmpeg_ok:
-        key = ask_menu("[3/7] 切割模式", [
-            ("1", "copy", "ffmpeg 流拷贝，每段都能单独播放（推荐）"),
-            ("2", "bytes", "纯字节切割，零依赖最快；第 2 段起需合并后播放"),
-        ], "2" if args.mode == "bytes" else "1")
-        mode = "copy" if key == "1" else "bytes"
-    else:
-        log("")
-        log("[3/7] 切割模式")
-        log("    未检测到 ffmpeg，只能使用 bytes 纯字节切割模式。")
-        mode = "bytes"
-
-    # [4/7] 原文件处理
+    # [3/6] 原文件处理
     mark_default = {"rename": "1", "move": "2", "none": "3"}.get(args.mark_source, "1")
     if args.delete_source:
         mark_default = "4"
-    key = ask_menu("[4/7] 切割完成后，原文件怎么处理", [
+    key = ask_menu("[3/6] 切割完成后，原文件怎么处理", [
         ("1", "改名", "原名#origin.扩展名（推荐）"),
         ("2", "移动", "移到单独的 %s/ 文件夹" % args.source_dir),
         ("3", "不动", "保持原样"),
@@ -1623,27 +1524,25 @@ def _wizard_impl(args, ffmpeg_ok: bool):
             log("    已自动改为：改名（#origin）")
             mark_source = "rename"
 
-    # [5/7] 子目录
+    # [4/6] 子目录
     log("")
-    recursive = ask("[5/7] 是否包含子文件夹？[Y/n]：",
+    recursive = ask("[4/6] 是否包含子文件夹？[Y/n]：",
                     "n" if args.no_recursive else "y").lower() != "n"
 
-    # [6/7] 预览
+    # [5/6] 预览
     log("")
-    preview = ask("[6/7] 是否先预览一遍（不写任何文件）？[y/N]：",
+    preview = ask("[5/6] 是否先预览一遍（不写任何文件）？[y/N]：",
                   "y" if args.dry_run else "n").lower() in ("y", "yes")
 
-    # [7/7] 详细调试信息
+    # [6/6] 详细调试信息
     log("")
-    log("[7/7] 是否输出详细调试信息？")
+    log("[6/6] 是否输出详细调试信息？")
     log("    会额外打印 ffmpeg 路径与版本、源文件流布局、容器标签、")
     log("    ffmpeg 完整命令与返回码、每段时长码率明细。排查问题很有用。")
     debug = ask("    输出详细调试信息？[y/N]：",
                 "y" if args.debug else "n").lower() in ("y", "yes")
 
     # 汇总确认
-    mode_text = ("copy（ffmpeg 流拷贝，每段可独立播放）" if mode == "copy"
-                 else "bytes（纯字节切割）")
     if seconds:
         split_text = "按时间：每片 %.0f 秒（%.1f 分钟）" % (seconds, seconds / 60.0)
     else:
@@ -1655,7 +1554,7 @@ def _wizard_impl(args, ffmpeg_ok: bool):
     log("    切分方式   ：%s" % split_text)
     log("    处理范围   ：%s" % ("全部视频文件（不按大小筛选）" if all_files
                                 else "仅体积超过 %s 的文件" % threshold_text))
-    log("    切割模式   ：%s" % mode_text)
+    log("    切割方式   ：ffmpeg 无损流拷贝（每段可独立播放）")
     log("    原文件处理 ：%s" % describe_mark(mark_source, args.source_dir))
     log("    子目录     ：%s" % ("包含" if recursive else "不包含"))
     log("    先预览     ：%s" % ("是" if preview else "否"))
@@ -1678,7 +1577,6 @@ def _wizard_impl(args, ffmpeg_ok: bool):
         "threshold": threshold_text,
         "seconds": seconds,
         "all": all_files,
-        "mode": mode,
         "mark_source": mark_source,
         "source_dir": args.source_dir,
         "recursive": recursive,
@@ -1697,12 +1595,6 @@ def close_log() -> None:
         except Exception:
             pass
         LOG_HANDLE = None
-
-
-def resolve_mode(mode: str, ffmpeg, ffprobe) -> str:
-    if mode == "auto":
-        return "copy" if (ffmpeg and ffprobe) else "bytes"
-    return mode
 
 
 def main(argv=None) -> int:
@@ -1756,8 +1648,16 @@ def main(argv=None) -> int:
         close_log()
         return 0 if ffmpeg else 1
 
+    # 没有 ffmpeg 就没有第二条路，直接退出（向导里选不出别的模式）
+    if not (ffmpeg and ffprobe):
+        log("")
+        log("未检测到 ffmpeg/ffprobe，无法切割。")
+        log("先安装 ffmpeg（可重跑加 --install-ffmpeg），再运行本工具。")
+        close_log()
+        return 1
+
     if interactive:
-        cfg = interactive_wizard(args, bool(ffmpeg and ffprobe))
+        cfg = interactive_wizard(args)
         if cfg is None:
             close_log()
             return 0
@@ -1766,7 +1666,6 @@ def main(argv=None) -> int:
         args.size = cfg["threshold"]
         args.seconds = cfg["seconds"]
         args.all = bool(cfg.get("all"))
-        args.mode = cfg["mode"]
         args.source_dir = cfg["source_dir"]
         args.no_recursive = not cfg["recursive"]
         DEBUG_MODE = bool(cfg.get("debug"))
@@ -1787,9 +1686,7 @@ def main(argv=None) -> int:
 
         if cfg["preview"]:
             args.dry_run = True
-            code = run_processing(args, folders, threshold,
-                                  resolve_mode(args.mode, ffmpeg, ffprobe),
-                                  ffmpeg, ffprobe)
+            code = run_processing(args, folders, threshold, ffmpeg, ffprobe)
             log("")
             if ask("预览结束。是否现在正式执行切割？[Y/n]：", "y").lower() == "n":
                 log("已取消，未做任何改动。")
@@ -1797,9 +1694,7 @@ def main(argv=None) -> int:
                 return code
             args.dry_run = False
 
-    code = run_processing(args, folders, threshold,
-                          resolve_mode(args.mode, ffmpeg, ffprobe),
-                          ffmpeg, ffprobe)
+    code = run_processing(args, folders, threshold, ffmpeg, ffprobe)
     close_log()
     return code
 
