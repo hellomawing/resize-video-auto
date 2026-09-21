@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import config, db
-from ..models import BrowseOut, DirItem, HealthOut, StatsOut, ToolInfo
+from ..models import BrowseOut, DirItem, DirShortcut, HealthOut, StatsOut, ToolInfo
 from core import splitter as engine
 
 router = APIRouter(tags=["system"])
@@ -64,6 +64,17 @@ def _allowed_roots() -> list:
     return roots
 
 
+def _within(path: Path, roots) -> bool:
+    """路径是否落在某个白名单根目录之内（含根本身）。"""
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def ensure_allowed(path: Path, roots=None) -> Path:
     """
     确认路径落在白名单根目录内。这是网页上所有「用户给路径」的入口
@@ -77,42 +88,89 @@ def ensure_allowed(path: Path, roots=None) -> Path:
         resolved = path.resolve()
     except OSError as exc:
         raise HTTPException(status_code=400, detail="路径无法解析：%s" % exc)
-    for root in roots:
-        try:
-            resolved.relative_to(root)
-            return resolved
-        except ValueError:
-            continue
+    if _within(resolved, roots):
+        return resolved
     raise HTTPException(
         status_code=403,
         detail="路径 %s 不在可访问范围内。允许的根目录：%s"
                % (resolved, "、".join(str(r) for r in roots)))
 
 
+def _collect_shortcuts(settings, roots) -> list:
+    """目录选择器的「常用目录」。详见 models.DirShortcut 的注释。
+
+    三个来源，按「用户最可能想去」排序：
+      1. 已添加的监控目录 —— 撤销与重切的主战场，备注顺手当说明
+      2. 最近任务出现过的目录 —— 手动扫过、切过的地方
+      3. 系统设置里的输出目录 —— 哪怕只用过一次也得看得见
+
+    白名单之外的目录不给入口：点了也是 403，摆出来只会让人白跑一趟。
+    """
+    items, seen = [], set()
+
+    def add(raw, name, kind, note=""):
+        raw = (raw or "").strip()
+        if not raw:
+            return
+        try:
+            resolved = Path(raw).resolve()
+        except OSError:
+            return
+        key = str(resolved)
+        if key in seen or not _within(resolved, roots):
+            return
+        seen.add(key)
+        items.append(DirShortcut(name=name or resolved.name or key, path=key,
+                                 kind=kind, note=note))
+
+    for wp in config.load_watchpoints():
+        path = wp.get("path") or ""
+        add(path, Path(path).name, "watchpoint", wp.get("note") or "")
+    # 读库失败不该让整个目录列表挂掉 —— 快捷入口是锦上添花，不是必需品
+    try:
+        for raw in db.recent_job_dirs():
+            add(raw, Path(raw).name, "job", "最近处理过")
+    except Exception:                                  # noqa: BLE001
+        pass
+    outdir = settings["split"].get("outdir") or ""
+    add(outdir, Path(outdir).name, "setting", "系统设置里的输出目录")
+    return items
+
+
 @router.get("/browse", response_model=BrowseOut)
 def browse(path: str = Query(default=None, description="要浏览的目录，省略则返回各根目录")):
     roots = _allowed_roots()
-    root_texts = [str(r) for r in roots]
+    settings = config.load_settings()
+    shortcuts = _collect_shortcuts(settings, roots)
+
+    # 存在的根才放进 roots（下拉里可选），不存在的单独报出来。
+    # 系统默认白名单是 /vol1~4，但真机上往往只有 /vol1 —— 把 /vol2~4
+    # 摆在选择器里，用户点一下只会得到一句「目录不存在」。
+    live_roots, missing_roots = [], []
+    for r in roots:
+        (live_roots if r.is_dir() else missing_roots).append(str(r))
+    root_texts = live_roots or [str(r) for r in roots]
 
     if not path:
         dirs, error = [], None
-        for r in roots:
-            if r.is_dir():
-                dirs.append(DirItem(name=r.name or str(r), path=str(r)))
+        dirs = [DirItem(name=Path(r).name or r, path=r) for r in live_roots]
         if not dirs:
             error = ("配置的可访问根目录都不存在：%s。"
-                     "容器里请确认这些路径已经挂载进来" % "、".join(root_texts))
+                     "容器里请确认这些路径已经挂载进来"
+                     % "、".join(str(r) for r in roots))
         return BrowseOut(path="", parent=None, roots=root_texts,
-                         dirs=dirs, video_count=0, error=error)
+                         missing_roots=missing_roots, dirs=dirs,
+                         shortcuts=shortcuts, video_count=0, error=error)
 
     target = ensure_allowed(Path(path), roots)
 
     if not target.is_dir():
         return BrowseOut(path=str(target), parent=str(target.parent),
-                         roots=root_texts, dirs=[], video_count=0,
-                         error="目录不存在或没有访问权限")
+                         roots=root_texts, missing_roots=missing_roots,
+                         dirs=[], shortcuts=shortcuts, video_count=0,
+                         error="目录不存在，或者容器没有权限访问它"
+                               "（确认路径拼写、以及它是否已挂载进容器）")
 
-    settings = config.load_settings()
     exts = set(engine.normalize_exts(settings["split"].get("ext")))
     dirs, videos, error = [], 0, None
     try:
@@ -128,7 +186,14 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
                 except OSError:
                     continue
     except PermissionError:
-        error = "没有权限读取该目录"
+        # 这一条真机上必然踩到：fnOS 的存储池根 /vol1 权限位是 000、
+        # 没有扩展 ACL，readdir 直接 EACCES，但**访问它下面的目录完全正常**。
+        # 所以别说一句「没有权限」就完事，得给出路 —— 否则用户会以为
+        # 是自己配置错了，或者以为整块盘都读不了。
+        error = ("没有权限列出该目录的子目录。请注意：这**不代表**它下面的目录"
+                 "不可用 —— 像 fnOS 就把存储池根目录（/vol1）故意设成不可枚举，"
+                 "但直接访问它下面的路径（如 /vol1/1000/…）完全正常。"
+                 "请用上方的「常用目录」快捷入口，或直接输入完整路径。")
     except OSError as exc:
         error = "读取目录失败：%s" % exc
 
@@ -136,7 +201,8 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
     dirs.sort(key=lambda d: (d.name.startswith("@"), d.name.lower()))
     parent = str(target.parent) if target.parent != target else None
     return BrowseOut(path=str(target), parent=parent, roots=root_texts,
-                     dirs=dirs, video_count=videos, error=error)
+                     missing_roots=missing_roots, dirs=dirs,
+                     shortcuts=shortcuts, video_count=videos, error=error)
 
 
 @router.get("/env")

@@ -34,21 +34,39 @@
 }
 ```
 
-### GET /api/browse?path=/vol1
-用于前端「选择监控目录」。`path` 省略时返回各可访问根目录。
+### GET /api/browse?path=/vol1/1000
+用于前端「选择目录」（撤销页与监控页共用同一个选择器）。`path` 省略时返回各可访问根目录。
 ```json
 {
-  "path": "/vol1",
-  "parent": "/",
-  "roots": ["/vol1", "/vol2"],
-  "dirs": [ { "name": "media", "path": "/vol1/media" } ],
+  "path": "/vol1/1000",
+  "parent": "/vol1",
+  "roots": ["/vol1"],
+  "missingRoots": ["/vol2", "/vol3", "/vol4"],
+  "dirs": [ { "name": "video-split-in", "path": "/vol1/1000/video-split-in" } ],
+  "shortcuts": [
+    { "name": "video-split-in", "path": "/vol1/1000/video-split-in",
+      "kind": "watchpoint", "note": "相机导入目录" }
+  ],
   "videoCount": 0,
   "error": null
 }
 ```
 - 只返回目录，不下发文件列表（目录可能上万条）。
 - 传入路径不在白名单内时返回 `403`。
-- 路径不存在或没权限时返回 200，但 `error` 字段写明原因，`dirs` 为空。
+- 路径不存在、或没有权限列出其子目录时返回 200，但 `error` 字段写明原因，`dirs` 为空。
+- `roots` **只含实际存在的根目录**；配置里写了但不存在的挪到 `missingRoots`
+  （否则前端的根下拉里全是点了就报「目录不存在」的死入口）。
+  若一个都不存在，`roots` 退回原样返回，并在 `error` 里提示可能没挂载进容器。
+- `shortcuts`：**常用目录**，按此顺序 —— 已添加的监控目录（`kind=watchpoint`，
+  `note` 取该目录的备注）→ 最近任务出现过的目录（`job`，`outdir` 与 `src` 的父目录）
+  → 系统设置里的输出目录（`setting`）。按真实路径去重，**白名单外的一律不下发**
+  （点了也是 403，摆出来只会让人白跑一趟）。
+
+> **为什么需要 `shortcuts`**：fnOS 这类系统把存储池根目录 `/vol1` 的权限位设成 `000`、
+> 连一条扩展 ACL 都没有（`getfacl` 干干净净），内核直接拒绝对它 readdir ——
+> 于是**「从根目录往下逐级点」这条路第一级就是死的**，用户看到「没有权限」后再也走不动。
+> 但**枚举和访问是两件事**：`/vol1/1000` 及其下所有目录都能正常列出。
+> 所以选择器给了两条绕过它的路：点 `shortcuts` 直达，或直接输入完整路径。
 
 ---
 

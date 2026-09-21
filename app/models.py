@@ -64,11 +64,30 @@ class DirItem(CamelModel):
     path: str
 
 
+class DirShortcut(CamelModel):
+    """目录选择器里的「常用目录」条目。
+
+    为什么需要它：fnOS 的存储池根（/vol1）权限位是 000、也没有扩展 ACL，
+    内核拒绝对它 readdir —— 「从根往下逐级点」这条路第一级就走不通。
+    但拿到完整路径就能正常访问（enumeration 和 access 是两回事），
+    所以把这些「用户自己用过、肯定真实存在」的目录直接摆出来当入口。
+    """
+    name: str
+    path: str
+    # watchpoint=已添加的监控目录 | job=最近处理过 | setting=系统输出目录
+    kind: Literal["watchpoint", "job", "setting"] = "job"
+    note: str = ""
+
+
 class BrowseOut(CamelModel):
     path: str
     parent: Optional[str] = None
+    #: 只含**实际存在**的根目录。配置里那些不存在的挪到 missing_roots，
+    #: 免得选择器里挂着一堆点了就报错的死入口。
     roots: list[str] = Field(default_factory=list)
+    missing_roots: list[str] = Field(default_factory=list)
     dirs: list[DirItem] = Field(default_factory=list)
+    shortcuts: list[DirShortcut] = Field(default_factory=list)
     video_count: int = 0
     error: Optional[str] = None
 

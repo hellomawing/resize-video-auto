@@ -37,11 +37,24 @@ export interface BrowseEntry {
   path: string
 }
 
+// 目录选择器里的「常用目录」。为什么需要：像 fnOS 这类系统把存储池根目录
+// （/vol1）设成不可枚举，从根往下逐级点第一级就断了；而这些目录是用户
+// 自己用过的，点一下直达，绕开那一层。
+export interface DirShortcut {
+  name: string
+  path: string
+  kind: 'watchpoint' | 'job' | 'setting'
+  note: string
+}
+
 export interface BrowseResult {
   path: string
-  parent: string
+  parent: string | null
+  // 只含实际存在的根目录；配置里不存在的挪到 missingRoots
   roots: string[]
+  missingRoots: string[]
   dirs: BrowseEntry[]
+  shortcuts: DirShortcut[]
   videoCount: number
   error: string | null
 }

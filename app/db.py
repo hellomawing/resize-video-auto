@@ -15,6 +15,7 @@ NAS 上容器随时可能被重启、被升级、被断电，队列如果只在�
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -257,6 +258,34 @@ def list_jobs(status: str = None, query: str = None, limit: int = 50,
             f"SELECT * FROM jobs {clause} ORDER BY created_at DESC, rowid DESC "
             f"LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
     return total, [row_to_job(r) for r in rows]
+
+
+def recent_job_dirs(limit: int = 300) -> list:
+    """最近任务里出现过的目录，最近的在前。
+
+    给网页上的目录选择器当「常用目录」用。为什么需要：fnOS 的存储池根
+    （如 /vol1）权限位是 000 且不含扩展 ACL，内核拒绝对它 readdir ——
+    也就是**「从根目录往下逐级浏览」这条路在那种机器上第一级就是死的**。
+    但拿到完整路径就能正常访问，所以把「用户已经用过的目录」直接摆出来，
+    绕开那一层。最近切过的目录恰恰是撤销和重新分割最可能回去的地方。
+
+    只取目录本身：outdir 直接就是目录，src 要取它的父目录。
+    去重按出现顺序保留第一次 —— 顺序本身就是要传达的信息。
+    """
+    with _lock:
+        rows = get_conn().execute(
+            "SELECT src, outdir FROM jobs ORDER BY created_at DESC, rowid DESC "
+            "LIMIT ?", (int(limit),)).fetchall()
+    seen, out = set(), []
+    for row in rows:
+        candidates = [row["outdir"], os.path.dirname(row["src"] or "")]
+        for raw in candidates:
+            raw = (raw or "").rstrip("/")
+            if not raw or raw in seen:
+                continue
+            seen.add(raw)
+            out.append(raw)
+    return out
 
 
 def active_job_for(src: str) -> dict:
