@@ -115,7 +115,10 @@
   播不了，却会让原片被改名成 `#origin`，看着像切好了；`auto` 更糟，它会在 copy
   失败时**静默**降级成 bytes。旧配置里残留的 `mode` 键会被直接忽略。
 - `split.bySize`：true=按大小切，false=按时间切（用 `seconds`）
-- `split.all`：true=不按大小筛选，所有视频都切
+- `split.all`：**派生字段，等于 `!bySize`，传入值会被忽略**。按时长切时为 true
+  （所有视频入队，否则小视频永远达不到大小阈值、按时长切分形同虚设）；
+  按大小切时为 false（不超过阈值的不切，否则小视频会被空忙重封装成 1 段）。
+  设置页不再提供该开关。
 - `split.ext`：支持处理的扩展名。**取值只能是能无损流拷贝的那 8 种**：
   `.mp4 .m4v .mov .mkv .webm .ts .m2ts .mts`（与引擎的 `SEGMENT_FRIENDLY` 单点同步）。
   其它后缀（avi / wmv / flv / mpg / 3gp / rmvb / vob）会被规范化时剔除 —— 切开它们

@@ -128,6 +128,8 @@ function save(): void {
           </select>
           <div class="field-hint">
             它同时决定下面填哪一格：按大小填「单段大小」，按时长填「单段时长」。
+            也决定扫描门槛：按大小时只切超过「单段大小」的视频；按时长时所有视频都入队，
+            仍受「监控参数 → 最小文件大小」的限制。
           </div>
         </div>
 
@@ -144,15 +146,6 @@ function save(): void {
           <input v-model.number="form.split.seconds" type="number" min="1" class="input" />
           <div class="field-hint">
             每段的目标秒数。切点必须落在关键帧上，所以每段实际时长会围绕这个值浮动，通常略长一点。
-          </div>
-        </div>
-
-        <div class="field">
-          <label class="field-label">忽略大小，全部切分</label>
-          <Toggle v-model="form.split.all" />
-          <div class="field-hint">
-            开启后不再要求「超过单段大小才切」，短视频也会被切。
-            它只放行「大小」这一关，仍受「监控参数」里最小文件大小的限制。
           </div>
         </div>
 

@@ -69,7 +69,9 @@ DEFAULT_SETTINGS = {
         "bySize": True,             # True=按大小切，False=按时间切（用 seconds）
         "size": "3.9G",
         "seconds": 300,
-        "all": False,               # True=不按大小筛选，所有视频都切
+        # 派生字段：= not bySize（按时长切必须全量入队，按大小切必须看阈值），
+        # 用户不可直接设置，见 _normalize_settings
+        "all": False,
         # 支持处理的格式 = 引擎里能流拷贝的那几种（见 engine.SUPPORTED_EXTS）。
         # 这里不另写一份列表：新增/删除格式只改引擎里的 SEGMENT_FRIENDLY。
         "ext": list(engine.SUPPORTED_EXTS),
@@ -181,7 +183,11 @@ def _normalize_settings(s: dict) -> dict:
     if split.get("outdirMode") not in ("same", "custom"):
         split["outdirMode"] = "same"
     split["bySize"] = bool(split.get("bySize", True))
-    split["all"] = bool(split.get("all", False))
+    # 「忽略大小，全部切分」不再由用户直接控制，随定段方式联动派生：
+    # 按大小切（bySize=True）→ 关（不超过阈值的不切，否则小视频会被
+    # 空忙一遍重封装成 1 段）；按时长切 → 开（扫描器不读时长、只按体积
+    # 快速筛选，必须放行否则按时长切分对绝大多数视频无效）。
+    split["all"] = not split["bySize"]
     split["recursive"] = bool(split.get("recursive", True))
     split["keepMetadata"] = bool(split.get("keepMetadata", True))
     split["overwrite"] = bool(split.get("overwrite", False))
