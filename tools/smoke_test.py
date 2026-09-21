@@ -171,7 +171,7 @@ def main() -> int:
         status, settings = req("GET", "/api/settings")
         check("GET /api/settings 返回 200", status == 200)
 
-        settings["split"]["mode"] = "copy"
+        # 切割方式已固定为 ffmpeg 流拷贝，不再有 mode 设置项
         settings["split"]["bySize"] = True
         settings["split"]["size"] = "400K"   # 合成画面压缩率高，20 秒才 ~1MB，取 400K 切成 3 段
         settings["split"]["markSource"] = "rename"
@@ -186,8 +186,9 @@ def main() -> int:
         check("设置已保存", bool(saved and saved["split"]["size"] == "400K"),
               (saved or {}).get("split", {}).get("size"))
 
+        # 用仍存在的枚举字段验证「非法值被拒」（mode 设置项已随纯字节切割一起取消）
         status, bad = req("PUT", "/api/settings",
-                          {"split": {"mode": "不存在的模式"}})
+                          {"split": {"markSource": "不存在的模式"}})
         check("非法枚举被拒绝", status == 422, "HTTP %s" % status)
 
         # ---------------------------------------------------------- 目录浏览

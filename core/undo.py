@@ -38,7 +38,13 @@ IS_MAC = platform.system() == "Darwin"
 SLICE_RE = re.compile(r"^(?P<base>.+)#(?P<idx>\d+)$")
 ORIGIN_SUFFIX = "#origin"
 
-VIDEO_EXTS = engine.DEFAULT_EXTS
+# 撤销扫描认哪些后缀：这里刻意比引擎的「支持处理格式」更宽 ——
+# 撤销面向的是**历史产物**，早期版本用纯字节切割处理过 avi/wmv 这类文件，
+# 它们的切片和 #origin 原片还躺在用户目录里等着收拾。扫描白名单收窄是
+# 「以后不再处理」，不该反过来让旧产物变得无法清理。
+VIDEO_EXTS = engine.DEFAULT_EXTS + tuple(
+    e for e in (".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".3gp", ".rmvb", ".vob")
+    if e not in engine.DEFAULT_EXTS)
 
 
 def verify_deletable(origin: Path, parts, size: int, total: int, ffprobe) -> dict:

@@ -101,7 +101,8 @@ MarkSource = Literal["rename", "move", "none", "delete"]
 
 
 class SplitSettings(CamelModel):
-    mode: Literal["auto", "copy", "bytes"] = "auto"
+    # 没有 mode：只做 ffmpeg 无损流拷贝，不再让用户选。曾经的 auto/copy/bytes
+    # 已删除，残留的 mode 键会在读取配置时被忽略（_deep_merge 只认默认里有的键）。
     by_size: bool = True
     size: str = "3.9G"
     seconds: float = 300
@@ -335,3 +336,35 @@ class UndoApplyOut(CamelModel):
 
 class ClearJobsIn(CamelModel):
     statuses: list[str] = Field(default_factory=lambda: ["success", "failed", "canceled"])
+
+
+# ---------------------------------------------------------------- 处理失败的文件
+
+class FailureOut(CamelModel):
+    """一个「切不动」的文件。
+
+    注意它不代表磁盘上少了什么：切分失败时本工具**绝不改动原片**，
+    这里只是把「哪个文件、为什么没成」记下来给人看。
+    size / mtime 是判断依据：文件变了就自动重新尝试，不需要人工清记录。
+    """
+    path: str
+    name: str
+    size: int = 0
+    mtime: float = 0
+    reason: str = ""
+    job_id: Optional[str] = None
+    at: str = ""
+
+
+class FailureListOut(CamelModel):
+    total: int = 0
+    items: list[FailureOut] = Field(default_factory=list)
+
+
+class FailurePathIn(CamelModel):
+    path: str
+
+
+class FailureClearIn(CamelModel):
+    # 不传 paths（或传 null）表示「全部清掉」
+    paths: Optional[list[str]] = None

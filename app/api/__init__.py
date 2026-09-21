@@ -4,13 +4,14 @@
 
 from fastapi import APIRouter
 
-from . import jobs, settings, system, undo, watchpoints, ws
+from . import failures, jobs, settings, system, undo, watchpoints, ws
 
 api_router = APIRouter()
 api_router.include_router(system.router)
 api_router.include_router(settings.router)
 api_router.include_router(watchpoints.router)
 api_router.include_router(jobs.router)
+api_router.include_router(failures.router)
 api_router.include_router(undo.router)
 api_router.include_router(ws.router)
 

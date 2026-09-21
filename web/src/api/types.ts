@@ -60,6 +60,11 @@ export interface BrowseResult {
 }
 
 // ---- 设置 ----
+/**
+ * 切割方式的历史取值。**已经不是设置项了**：本工具只做 ffmpeg 无损流拷贝。
+ * 保留这个联合类型是因为任务行里还存着老任务的 mode（auto / bytes），
+ * 列表与详情要能照原样显示出来。
+ */
 export type SplitMode = 'auto' | 'copy' | 'bytes'
 export type OutdirMode = 'same' | 'custom'
 export type MarkSource = 'rename' | 'move' | 'none' | 'delete'
@@ -73,7 +78,6 @@ export type MarkSource = 'rename' | 'move' | 'none' | 'delete'
 export type MarkValue = MarkSource | ''
 
 export interface SplitSettings {
-  mode: SplitMode
   bySize: boolean
   size: string
   seconds: number
@@ -317,6 +321,31 @@ export interface UndoResult {
   problems: string[]
   details: UndoDetail[]
   orphans: string[]
+}
+
+// ---- 处理失败的文件 ----
+
+/**
+ * 一个「切不动」的文件。**原片仍在磁盘上原封未动** —— 切分失败时本工具
+ * 不会改名、移动或删除源文件，这里只是登记「哪个文件、为什么没成」。
+ *
+ * size / mtime 是「同一性凭据」：文件被替换或改动过（两者有一个变了），
+ * 后端会自动忘掉这条记录、重新尝试一次，不需要人工清理。
+ */
+export interface FailureRecord {
+  path: string
+  name: string
+  size: number
+  mtime: number
+  reason: string
+  /** 失败那次的任务 id，可跳去任务队列看完整日志 */
+  jobId: string | null
+  at: string
+}
+
+export interface FailureList {
+  total: number
+  items: FailureRecord[]
 }
 
 // ---- WebSocket 消息（服务端单向推送） ----

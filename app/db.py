@@ -67,6 +67,21 @@ CREATE TABLE IF NOT EXISTS job_logs (
     PRIMARY KEY (job_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_job_logs_job ON job_logs(job_id, seq);
+
+-- 处理失败的文件（切不动、切完校验不过）。存在的意义是「别反复重试同一个
+-- 坏文件」：自动扫描每次都会看到它，没有这张表就会一次次入队、一次次失败，
+-- 把任务列表刷满。文件被替换或改动过（大小 / mtime 变了）则自动重新尝试，
+-- 不需要人工清记录。
+CREATE TABLE IF NOT EXISTS failures (
+    path      TEXT PRIMARY KEY,
+    src_name  TEXT NOT NULL,
+    src_size  INTEGER NOT NULL DEFAULT 0,
+    src_mtime REAL NOT NULL DEFAULT 0,
+    reason    TEXT,
+    job_id    TEXT,
+    at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_failures_at ON failures(at DESC);
 """
 
 
@@ -398,6 +413,88 @@ def get_logs(job_id: str, tail: int = 2000) -> tuple:
             (job_id, tail)).fetchall()
     lines = [r["line"] for r in reversed(rows)]
     return lines, total > len(lines)
+
+
+# ---------------------------------------------------------------- 处理失败的文件
+
+def _row_to_failure(row: sqlite3.Row) -> dict:
+    """数据库行 -> 对外 JSON（camelCase，与 docs/api.md 一致）。"""
+    return {
+        "path": row["path"],
+        "name": row["src_name"],
+        "size": row["src_size"],
+        "mtime": row["src_mtime"],
+        "reason": row["reason"],
+        "jobId": row["job_id"],
+        "at": row["at"],
+    }
+
+
+def record_failure(path, name: str, size: int, mtime: float,
+                   reason: str, job_id: str = None) -> None:
+    """
+    记下一个切不动的文件。同一路径重复失败就覆盖成最新原因与时间。
+
+    size/mtime 是**判断依据**：扫描时如果发现文件已经变了，就说明用户换过文件
+    或重新拷过，这条记录自动失效（见 scanner.consider_file），不需要人工清。
+    """
+    path = str(path)
+    with _lock:
+        conn = get_conn()
+        conn.execute(
+            "INSERT INTO failures (path, src_name, src_size, src_mtime, "
+            "reason, job_id, at) VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(path) DO UPDATE SET src_name=excluded.src_name, "
+            "src_size=excluded.src_size, src_mtime=excluded.src_mtime, "
+            "reason=excluded.reason, job_id=excluded.job_id, at=excluded.at",
+            (path, name or os.path.basename(path), int(size or 0),
+             float(mtime or 0), reason or "", job_id, now_iso()))
+        conn.commit()
+
+
+def forget_failure(path) -> None:
+    """忘掉某个文件的失败记录（重试成功、用户手动忽略、或文件已被替换）。"""
+    with _lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM failures WHERE path=?", (str(path),))
+        conn.commit()
+
+
+def failure_for(path):
+    """
+    取某个文件的失败记录，没有则 None。
+
+    这里只负责读，**不判断文件有没有变** —— 那要现场 stat 才作数，
+    由扫描器来做（scanner.consider_file）。
+    """
+    with _lock:
+        row = get_conn().execute(
+            "SELECT * FROM failures WHERE path=?", (str(path),)).fetchone()
+    return _row_to_failure(row) if row else None
+
+
+def list_failures(limit: int = 500) -> list:
+    """最近失败的文件，最新的排前面。"""
+    with _lock:
+        rows = get_conn().execute(
+            "SELECT * FROM failures ORDER BY at DESC LIMIT ?",
+            (int(limit),)).fetchall()
+    return [_row_to_failure(r) for r in rows]
+
+
+def clear_failures(paths=None) -> int:
+    """删掉失败记录：传路径列表就只删这几条，不传则清空。返回删掉几条。"""
+    with _lock:
+        conn = get_conn()
+        if paths:
+            items = [str(p) for p in paths]
+            marks = ", ".join("?" for _ in items)
+            cur = conn.execute(
+                "DELETE FROM failures WHERE path IN (%s)" % marks, items)
+        else:
+            cur = conn.execute("DELETE FROM failures")
+        conn.commit()
+        return cur.rowcount
 
 
 def prune(retention_days: int = 30) -> int:

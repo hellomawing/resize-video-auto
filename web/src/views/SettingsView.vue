@@ -7,7 +7,7 @@ import MarkSourcePicker from '../components/MarkSourcePicker.vue'
 import { getSettings, updateSettings } from '../api/settings'
 import { useToast } from '../composables/useToast'
 import { useWebSocket } from '../composables/useWebSocket'
-import type { Settings, SplitMode, OutdirMode } from '../api/types'
+import type { Settings, OutdirMode } from '../api/types'
 
 const toast = useToast()
 const ws = useWebSocket()
@@ -19,34 +19,6 @@ const form = ref<Settings>({} as Settings)
 // markSource 选到 delete 时，提交前必须二次确认
 const confirmDeleteSource = ref(false)
 
-// 选项文案与解释写在一起：下面几处提示都由同一份定义渲染，改文案时不会出现
-// 「下拉框里的说法」和「下面的解释」对不上号。
-const MODE_OPTIONS: { value: SplitMode; label: string; hint: string }[] = [
-  {
-    value: 'auto',
-    label: '自动（推荐）',
-    hint: '能用流拷贝就用流拷贝，用不了自动退回纯字节切割。拿不准就选这个。',
-  },
-  {
-    value: 'copy',
-    label: '流拷贝 · 每段都能单独播放',
-    hint:
-      '切点对齐关键帧，所以每段都是能独立播放的完整视频，播放器兼容性最好。' +
-      '代价是切点被关键帧位置牵着走，每段实际时长会围绕目标值浮动；' +
-      '源文件里 mp4 装不下的附加流（大疆的遥测数据、封面缩略图这类）会被跳过。',
-  },
-  {
-    value: 'bytes',
-    label: '纯字节切割 · 一个字节都不丢',
-    hint:
-      '直接把字节流切成几份，拼回来和原片完全相同，也不依赖 ffmpeg。' +
-      '代价是切点可能落在帧中间，单段未必能独立播放，而且做不到「按时间切」。',
-  },
-]
-const modeHint = computed(
-  () => MODE_OPTIONS.find((o) => o.value === form.value.split?.mode)?.hint ?? '',
-)
-
 // bySize 是个布尔字段：true = 按大小切，false = 按时长切。这里用下拉框而不是开关——
 // 开关关上时的含义（「按时长」）正好是标签的反义，很容易看反。
 const basis = computed<'size' | 'seconds'>({
@@ -55,12 +27,6 @@ const basis = computed<'size' | 'seconds'>({
     if (form.value.split) form.value.split.bySize = value === 'size'
   },
 })
-
-// 纯字节切割只认大小、不认时长（引擎会明确忽略秒数），所以「实际按什么切」才是
-// 该展示的单位：字节模式下固定按大小，免得露出一个填了也不生效的输入框。
-const effectiveBasis = computed<'size' | 'seconds'>(() =>
-  form.value.split?.mode === 'bytes' ? 'size' : basis.value,
-)
 
 const OUTDIR_OPTIONS: { value: OutdirMode; label: string; hint: string }[] = [
   {
@@ -148,13 +114,10 @@ function save(): void {
         <div class="field-hint card-intro">
           决定「切成什么样、切哪些、切出来的放哪」。改完点右上角「保存设置」即时生效。
         </div>
-
-        <div class="field">
-          <label class="field-label">切分模式</label>
-          <select v-model="form.split.mode" class="select">
-            <option v-for="o in MODE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-          </select>
-          <div class="field-hint">{{ modeHint }}</div>
+        <div class="field-hint">
+          切割方式固定为 <strong>ffmpeg 无损流拷贝</strong>：只换容器、不重新编码，
+          画质音质零损失，每段都是能独立播放的完整视频。切不动的文件不会被硬切，
+          而是原样保留原片、记进「任务队列 → 处理失败的文件」里等你处理。
         </div>
 
         <div class="field">
@@ -166,16 +129,9 @@ function save(): void {
           <div class="field-hint">
             它同时决定下面填哪一格：按大小填「单段大小」，按时长填「单段时长」。
           </div>
-          <div
-            v-if="form.split.mode === 'bytes' && basis === 'seconds'"
-            class="field-hint field-hint--warn"
-          >
-            纯字节切割做不到按时长切分，这里选的时长会被忽略，实际仍按「单段大小」切。
-            想要按时长，请把上面的切分模式改成「流拷贝」或「自动」。
-          </div>
         </div>
 
-        <div v-if="effectiveBasis === 'size'" class="field">
+        <div v-if="basis === 'size'" class="field">
           <label class="field-label">单段大小</label>
           <input v-model="form.split.size" class="input" placeholder="如 3.9G" />
           <div class="field-hint">
@@ -206,6 +162,13 @@ function save(): void {
           <div class="field-hint">
             只处理这些后缀的文件，不区分大小写；漏写前面的点会自动补上。
             本工具自己切出来的片段、已加标记的原片、归档目录里的文件始终跳过，与此项无关。
+          </div>
+          <div class="field-hint">
+            可选范围受限于「能无损切分的格式」：
+            <span class="mono">.mp4 .m4v .mov .mkv .webm .ts .m2ts .mts</span>。
+            其它后缀（avi / wmv / flv / rmvb 等）不在其列 —— 切开它们只能重新编码（有损）
+            或按字节硬劈（第 2 段起播不了），本工具两者都不做，所以它们既不会被扫描，
+            填进这里也会在保存时被剔除。
           </div>
         </div>
 

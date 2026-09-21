@@ -48,12 +48,14 @@ BUF_SIZE = 8 * 1024 * 1024          # 读写缓冲 8MB
 # 6.5G 的切分从 2 分多钟变成 4 分半）。
 TMP_PREFIX = ".vsplit-tmp-"
 
-DEFAULT_EXTS = (
-    ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv",
-    ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".rmvb", ".vob",
-)
-
-# 适合用 ffmpeg segment 流拷贝的格式（按关键帧切分后每段仍可独立播放）
+# 适合用 ffmpeg segment 流拷贝的格式：切点落在关键帧上，每段仍是能独立播放的
+# 完整视频，全程不重新编码。
+#
+# 这份表同时也是「本工具支持处理哪些格式」的唯一定义（见 SUPPORTED_EXTS）。
+# avi/wmv/flv/mpg/mpeg/3gp/rmvb/vob 不在这里 —— 它们要么容器头单点写在开头、
+# 要么索引结构不支持流式切分，想切开只能重新编码（有损）或按字节硬劈
+# （第 2 段起播不了）。本工具只做无损流拷贝，所以干脆不碰它们：
+# 与其切出一个播不了的结果，不如一开始就不把它算作待处理文件。
 SEGMENT_FRIENDLY = {
     ".mp4": "mp4",
     ".m4v": "mp4",
@@ -64,6 +66,13 @@ SEGMENT_FRIENDLY = {
     ".m2ts": "mpegts",
     ".mts": "mpegts",
 }
+
+# 支持处理的格式 = 能流拷贝的格式。单点维护：想增删格式只改上面那张表，
+# 扫描白名单、设置页、CLI 全部跟着走，不另写第二份列表。
+SUPPORTED_EXTS = tuple(SEGMENT_FRIENDLY)
+
+# 默认扫描白名单。保留这个名字：扫描器、设置页与 CLI 都按它取默认值。
+DEFAULT_EXTS = SUPPORTED_EXTS
 
 # ffmpeg 会强行改写的容器标签，保留不了原值（实测无解，详见桌面版文档）
 FFMPEG_LOCKED_TAGS = {"encoder"}
@@ -129,6 +138,16 @@ def dbg_block(title: str, lines) -> None:
     for ln in lines:
         log("   [调试] │ %s" % ln)
     log("   [调试] └─")
+
+
+def _add_note(notes, msg: str) -> None:
+    """
+    往调用方传进来的 notes 列表里追加一条「非致命但用户该知道」的提示。
+    重复消息只留一条 —— 重试循环里同一件事可能被撞见好几次。
+    """
+    if notes is None or not msg or msg in notes:
+        return
+    notes.append(msg)
 
 
 def emit_progress(phase: str = None, progress: float = None,
@@ -462,6 +481,14 @@ def split_by_bytes(src: Path, threshold: int, outdir: Path,
     """
     纯二进制切割：把文件均分成 n 段，保证每段 <= threshold，且 n 最小。
     不重新编码，不做任何字节改写，拼接即可还原原文件。
+
+    ⚠️ 服务端**不再走这条路**：split_one 只做流拷贝，因为按字节硬劈的产物
+    从第 2 段起播不了，却会让原片被改名成 #origin，用户以为切好了。
+    函数本体保留有两个理由：
+      1. cli/video_splitter.py（桌面命令行版）仍在用它，那边的 --mode bytes
+         是给脚本用户的高级能力；
+      2. core/undo.py 需要按字节形态识别历史产物（切片字节之和 == 原片
+         即判定为 bytes 产物，这是最强的可删性证明）。
     """
     size = src.stat().st_size
     n = max(1, math.ceil(size / threshold))
@@ -722,7 +749,7 @@ def _run_ffmpeg(cmd, duration: float, tmpdir: Path, suffix: str,
 
 def split_by_ffmpeg(src: Path, threshold: int, outdir: Path, dry_run: bool,
                     overwrite: bool, ffmpeg: str, ffprobe, keep_meta: bool,
-                    seg_seconds=None):
+                    seg_seconds=None, notes=None):
     """
     FFmpeg 流拷贝分割：-c copy，只换容器不重新编码，画质音质零损失，
     每一段都能独立播放。
@@ -734,12 +761,17 @@ def split_by_ffmpeg(src: Path, threshold: int, outdir: Path, dry_run: bool,
 
     注意 ffmpeg 的切点必须落在关键帧上，所以每段实际时长会略长于目标值。
     无论哪种方式，只要切出来有片段超阈值，都会自动调整参数重试。
+
+    notes 是个可选的 list：非致命、但用户应该知道的事（比如「附加流没能保留」）
+    往里追加，由调用方汇总成任务警告。用参数而不是返回值，是为了不破坏
+    dry-run 那条 return 分支的签名。
     """
     size = src.stat().st_size
     ext = src.suffix.lower()
     seg_format = SEGMENT_FRIENDLY.get(ext)
     if not seg_format:
-        raise RuntimeError("该格式不适合流拷贝分段")
+        raise RuntimeError("该格式不支持无损切分：%s（支持 %s）"
+                           % (ext or "无扩展名", "、".join(SUPPORTED_EXTS)))
 
     emit_progress(phase="probe", message="正在读取视频信息…")
     duration = probe_duration(src, ffprobe)
@@ -760,10 +792,11 @@ def split_by_ffmpeg(src: Path, threshold: int, outdir: Path, dry_run: bool,
                 s.get("codec_name") == "mjpeg" for s in layout["streams"])
                 else "附加视频流")
         desc = "、".join(sorted(set(p for p in parts if p))) or "附加流"
-        log("       源文件含 mp4 装不下的附加流（%s），流拷贝会跳过它们。" % desc)
+        log("       源文件含当前容器装不下的附加流（%s），本次切分会跳过它们。" % desc)
         log("       这类流一般是相机自带的遥测数据（大疆的 djmd 就含着拍摄")
-        log("       定位/运动记录），以及视频缩略图。")
-        log("       想一个字节都不丢，请把切割模式改成「纯字节切割」。")
+        log("       定位/运动记录），以及视频缩略图 —— 主视频与音频不受影响。")
+        _add_note(notes, "源文件含容器装不下的附加流（%s），未能保留；"
+                         "主视频与音频完整" % desc)
     else:
         mapping = ["-map", "0"]
     allow_mapping_fallback = mapping != restricted
@@ -880,6 +913,8 @@ def split_by_ffmpeg(src: Path, threshold: int, outdir: Path, dry_run: bool,
                     mapping_switched = True
                     last_error = "容器装不下全部流，改为只保留主视频+音频重试"
                     log("       %s" % last_error)
+                    _add_note(notes, "源文件含当前容器装不下的附加流，未能保留；"
+                                     "主视频与音频完整")
                     continue
                 raise FatalSplitError("ffmpeg 执行失败：%s" % (detail or "无错误输出"))
 
@@ -1131,10 +1166,57 @@ def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
 
 # ---------------------------------------------------------------- 单文件任务入口
 
+def verify_parts(src: Path, produced, ffprobe) -> tuple:
+    """
+    切完之后逐片核对，确认真的得到了「能独立播放的完整视频」。
+
+    返回 (problems, warnings)：problems 非空表示这次切分不可接受，
+    调用方必须把已生成的切片撤掉、原片原样保留。
+
+    为什么必须在引擎里兜住这一步：ffmpeg 流拷贝偶尔会**退出码 0 但产物是坏的**
+    —— 源文件索引损坏、写入途中有 IO 故障，切出来的段"文件在、却读不出时长"，
+    或者干脆没有视频流。只看退出码就报成功的话，用户会拿到一批播不了的切片，
+    而原片已经被改名成 #origin，看起来就像"切好了"，等发现时为时已晚。
+    """
+    problems, warns = [], []
+    if not ffprobe:
+        warns.append("未找到 ffprobe，本次跳过切片可播放性校验")
+        return problems, warns
+
+    src_info = probe_streams(src, ffprobe)
+    for idx, item in enumerate(produced, start=1):
+        path = Path(item[0])
+        info = probe_streams(path, ffprobe)
+        if info["n_video"] < 1:
+            problems.append("第 %d 段里读不到视频流" % idx)
+            continue
+        if src_info["n_audio"] and info["n_audio"] < 1:
+            problems.append("第 %d 段丢失了音频流" % idx)
+        if probe_duration(path, ffprobe) <= 0:
+            problems.append("第 %d 段读不出时长（索引未写完或文件损坏）" % idx)
+    return problems, warns
+
+
+def discard_parts(produced) -> int:
+    """
+    撤掉本次已经落地的切片，返回实际删掉几个。
+
+    只在「校验不通过」时调用：原片从头到尾没被碰过，删掉切片就等于回到切分前。
+    """
+    removed = 0
+    for item in produced or ():
+        try:
+            Path(item[0]).unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def split_one(src: Path,
               *,
               threshold: int,
-              mode: str = "auto",
+              mode: str = "copy",
               outdir: Path = None,
               ffmpeg=None,
               ffprobe=None,
@@ -1148,9 +1230,17 @@ def split_one(src: Path,
     """
     处理单个视频文件，返回结果字典。服务端每个任务调用一次。
 
+    只做一件事：**ffmpeg 无损流拷贝**。切不动（格式不支持、读不出时长、ffmpeg
+    报错、切完的段不可播放）就抛异常，由上层保留原片并把原因报给用户 ——
+    绝不偷偷降级成「按字节硬劈」，那种产物从第 2 段起播不了，却会让原片
+    被改名成 #origin，用户以为切好了。
+
+    mode 参数只为兼容旧调用保留：传 "bytes" 会直接报错（该方式已不再支持），
+    其余取值一律按流拷贝执行。
+
     返回：
         {
-          "usedMode": "copy" | "bytes",
+          "usedMode": "copy",
           "parts": [{"path": str, "name": str, "size": int}],
           "totalBytes": int,
           "durationSec": float,
@@ -1164,16 +1254,13 @@ def split_one(src: Path,
     outdir = Path(outdir) if outdir else src.parent
     warnings = []
 
+    if str(mode or "").strip().lower() == "bytes":
+        raise RuntimeError("纯字节切割已不再支持：本工具只做无损流拷贝"
+                           "（按字节硬劈的产物从第 2 段起无法播放）")
+    if not ffmpeg:
+        raise RuntimeError("未找到 ffmpeg，无法进行无损切割")
+
     size = src.stat().st_size
-    resolved = mode
-    if resolved == "auto":
-        resolved = "copy" if (ffmpeg and ffprobe) else "bytes"
-    if resolved == "copy" and not ffmpeg:
-        warnings.append("未找到 ffmpeg，已自动改用纯字节切割")
-        resolved = "bytes"
-    if resolved == "bytes" and seg_seconds:
-        warnings.append("纯字节切割做不到「按时间切分」，每片时长参数已忽略")
-        seg_seconds = None
 
     emit_progress(phase="probe", progress=0.0, parts_done=0, parts_total=0,
                   message="正在读取视频信息…")
@@ -1181,28 +1268,11 @@ def split_one(src: Path,
 
     outdir.mkdir(parents=True, exist_ok=True)
 
-    used_mode = resolved
-    if resolved == "copy":
-        try:
-            produced, used_mode = split_by_ffmpeg(
-                src, threshold, outdir, dry_run, overwrite,
-                ffmpeg, ffprobe, keep_metadata, seg_seconds=seg_seconds)
-        except Cancelled:
-            raise
-        except Exception as exc:      # noqa: BLE001
-            if "目标文件已存在" in str(exc):
-                raise
-            if seg_seconds:
-                # 用户明确要求按时间切分，就绝不偷偷降级成字节切割，
-                # 否则产物和预期完全不符，还会让人误以为用了 ffmpeg。
-                raise
-            warnings.append("流拷贝失败（%s），已回退为纯字节切割" % exc)
-            log("       流拷贝失败（%s），回退为纯字节切割。" % exc)
-            produced, used_mode = split_by_bytes(
-                src, threshold, outdir, dry_run, overwrite)
-    else:
-        produced, used_mode = split_by_bytes(
-            src, threshold, outdir, dry_run, overwrite)
+    # notes=warnings：把「附加流没能保留」这类非致命提示直接收进任务警告
+    produced, used_mode = split_by_ffmpeg(
+        src, threshold, outdir, dry_run, overwrite,
+        ffmpeg, ffprobe, keep_metadata, seg_seconds=seg_seconds,
+        notes=warnings)
 
     emit_progress(phase="verifying", message="正在校验与套用时间戳…")
     parts = []
@@ -1224,6 +1294,17 @@ def split_one(src: Path,
                     warnings.append("切片时长合计与原片偏差 %.2f 秒，建议开启调试信息复核" % gap)
         except Exception:
             pass
+
+    # 硬校验：切片读不出时长 / 丢掉视频流或音频流 -> 这次切分不算成功，
+    # 撤掉切片、原片不动，把原因抛给上层（任务会标失败，源文件保留）
+    if not dry_run:
+        problems, extra_warns = verify_parts(src, produced, ffprobe)
+        warnings.extend(extra_warns)
+        if problems:
+            removed = discard_parts(produced)
+            raise RuntimeError(
+                "切片校验未通过，已删除本次生成的 %d 个切片，原片未做任何改动。"
+                "原因：%s" % (removed, "；".join(problems)))
 
     emit_progress(phase="marking", message="正在处理原文件…")
     if dry_run:

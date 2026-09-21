@@ -178,7 +178,7 @@ def _run_job(job: dict) -> None:
         else:
             seg_seconds = float(split.get("seconds") or 300)
             on_log("切分方式   ：按时间，每片 %.0f 秒" % seg_seconds)
-        on_log("切割模式   ：%s" % split.get("mode"))
+        on_log("切割方式   ：ffmpeg 流拷贝（无损，每段可独立播放）")
         on_log("输出目录   ：%s" % outdir)
         on_log("原文件处理 ：%s%s" % (
             _mark_text(mark_source, source_dir),
@@ -189,7 +189,7 @@ def _run_job(job: dict) -> None:
         result = engine.split_one(
             src,
             threshold=threshold,
-            mode=split.get("mode") or "auto",
+            mode="copy",          # 只做无损流拷贝，不再有别的模式
             outdir=outdir,
             ffmpeg=ffmpeg,
             ffprobe=ffprobe,
@@ -224,6 +224,8 @@ def _run_job(job: dict) -> None:
                                        engine.human_size(result["totalBytes"])),
             finished_at=db.now_iso(),
         )
+        # 之前失败过的文件这次成了（多半是用户换了片源）：把失败记录清掉
+        _forget_failure(src)
 
     except engine.Cancelled:
         on_log("任务已被取消，已生成的部分切片已清理。")
@@ -233,6 +235,9 @@ def _run_job(job: dict) -> None:
     except Exception as exc:                  # noqa: BLE001
         detail = str(exc) or exc.__class__.__name__
         on_log("处理失败：%s" % detail)
+        # 记进「处理失败的文件」：任务页会列出来，自动扫描也不会再反复重试
+        # 这个文件（源码文件本身原样保留，一个字都没动）
+        _record_failure(src, job_id, detail)
         db.update_job(job_id, status="failed", phase="done", error=detail,
                       message="失败：%s" % detail, finished_at=db.now_iso(),
                       duration_sec=round(time.time() - started, 1))
@@ -247,6 +252,34 @@ def _run_job(job: dict) -> None:
         except Exception:
             pass
         bus.publish({"type": "job.updated", "job": db.get_job(job_id)})
+
+
+def _record_failure(src: Path, job_id: str, reason: str) -> None:
+    """
+    把这次失败记进「处理失败的文件」。之后自动扫描看到同一个文件、
+    大小与修改时间都没变，就会跳过它，不再反复重试。
+
+    记录里带的是源文件的 size/mtime，所以用户换掉片源后会自动重新处理。
+    连 stat 都失败就记 0/0 —— 那样的记录永远匹配不上任何文件，等于不拦，
+    比误拦一个本来能处理的文件安全。
+    """
+    try:
+        st = src.stat()
+        size, mtime = st.st_size, st.st_mtime
+    except OSError:
+        size, mtime = 0, 0.0
+    try:
+        db.record_failure(src, src.name, size, mtime, reason, job_id)
+    except Exception:
+        # 记录失败不该把任务本身的错误盖掉
+        pass
+
+
+def _forget_failure(src: Path) -> None:
+    try:
+        db.forget_failure(src)
+    except Exception:
+        pass
 
 
 def _mark_text(mark_source: str, source_dir: str) -> str:

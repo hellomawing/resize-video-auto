@@ -22,6 +22,8 @@ import threading
 from copy import deepcopy
 from pathlib import Path
 
+from core import splitter as engine
+
 APP_VERSION = "1.0.0"
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -59,15 +61,18 @@ LEGACY_SOURCE_DIRS = ("origin",)
 
 DEFAULT_SETTINGS = {
     "split": {
-        "mode": "auto",             # auto | copy | bytes
+        # 没有「切割模式」这一项：本工具只做 ffmpeg 无损流拷贝（-c copy）。
+        # 曾经有个 auto/copy/bytes 三选一，bytes 那条路按字节硬劈，
+        # 产物从第 2 段起播不了，却会让原片被改名成 #origin，用户以为切好了。
+        # 与其让人在「一个字节都不丢」和「每段都能播」之间做选择，
+        # 不如只保留唯一正确的那条：切不动就报错、保留原片、列进失败清单。
         "bySize": True,             # True=按大小切，False=按时间切（用 seconds）
         "size": "3.9G",
         "seconds": 300,
         "all": False,               # True=不按大小筛选，所有视频都切
-        "ext": [
-            ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv",
-            ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".rmvb", ".vob",
-        ],
+        # 支持处理的格式 = 引擎里能流拷贝的那几种（见 engine.SUPPORTED_EXTS）。
+        # 这里不另写一份列表：新增/删除格式只改引擎里的 SEGMENT_FRIENDLY。
+        "ext": list(engine.SUPPORTED_EXTS),
         "recursive": True,
         "outdirMode": "same",       # same | custom
         "outdir": "",
@@ -171,8 +176,6 @@ def save_settings(data: dict) -> dict:
 def _normalize_settings(s: dict) -> dict:
     """把明显不合法的值纠正回可用范围，避免脏配置把服务卡住。"""
     split = s["split"]
-    if split.get("mode") not in ("auto", "copy", "bytes"):
-        split["mode"] = "auto"
     if split.get("markSource") not in MARK_SOURCES:
         split["markSource"] = DEFAULT_MARK_SOURCE
     if split.get("outdirMode") not in ("same", "custom"):
@@ -187,8 +190,26 @@ def _normalize_settings(s: dict) -> dict:
         split["seconds"] = max(1.0, float(split.get("seconds") or 300))
     except (TypeError, ValueError):
         split["seconds"] = 300.0
-    if not isinstance(split.get("ext"), list) or not split["ext"]:
-        split["ext"] = list(DEFAULT_SETTINGS["split"]["ext"])
+    # 支持格式：只认引擎能无损切分的那些。老配置里可能还留着
+    # avi/wmv/flv/mpg/mpeg/3gp/rmvb/vob —— 它们是靠「copy 失败就偷偷按字节切」
+    # 才处理得动的，那条路已经取消。留着它们只会让扫描反复把文件送进队列，
+    # 然后在切割时报「该格式不支持无损切分」，不如在读取配置这一层就滤掉。
+    supported = list(engine.SUPPORTED_EXTS)
+    raw_exts = split.get("ext")
+    if not isinstance(raw_exts, list):
+        raw_exts = []
+    kept = []
+    for item in raw_exts:
+        ext = str(item).strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        if ext in supported and ext not in kept:
+            kept.append(ext)
+    # 一个都没剩下（比如用户当初只填了 .avi）就回到默认全量：
+    # 空列表在扫描器眼里等于「什么都不处理」，那才真的像坏了。
+    split["ext"] = kept or supported
     if not isinstance(split.get("size"), str) or not split["size"].strip():
         split["size"] = DEFAULT_SETTINGS["split"]["size"]
     if not isinstance(split.get("outdir"), str):

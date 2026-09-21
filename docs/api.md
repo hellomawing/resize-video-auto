@@ -81,12 +81,11 @@
 ```json
 {
   "split": {
-    "mode": "auto",
     "bySize": true,
     "size": "3.9G",
     "seconds": 300,
     "all": false,
-    "ext": [".mp4", ".mov", ".mkv"],
+    "ext": [".mp4", ".m4v", ".mov", ".mkv", ".webm", ".ts", ".m2ts", ".mts"],
     "recursive": true,
     "outdirMode": "same",
     "outdir": "",
@@ -111,9 +110,17 @@
 }
 ```
 字段说明：
-- `split.mode`：`auto`（有 ffmpeg 用 copy，否则 bytes）| `copy` | `bytes`
+- **没有 `split.mode`**：切割方式固定为 ffmpeg 无损流拷贝（`-c copy`）。历史版本的
+  `auto` / `copy` / `bytes` 三选一已取消 —— `bytes`（按字节硬劈）的产物从第 2 段起
+  播不了，却会让原片被改名成 `#origin`，看着像切好了；`auto` 更糟，它会在 copy
+  失败时**静默**降级成 bytes。旧配置里残留的 `mode` 键会被直接忽略。
 - `split.bySize`：true=按大小切，false=按时间切（用 `seconds`）
 - `split.all`：true=不按大小筛选，所有视频都切
+- `split.ext`：支持处理的扩展名。**取值只能是能无损流拷贝的那 8 种**：
+  `.mp4 .m4v .mov .mkv .webm .ts .m2ts .mts`（与引擎的 `SEGMENT_FRIENDLY` 单点同步）。
+  其它后缀（avi / wmv / flv / mpg / 3gp / rmvb / vob）会被规范化时剔除 —— 切开它们
+  只能重新编码（有损）或按字节硬劈，本工具两者都不做，因此它们既不会被扫描，
+  也不会进入队列。
 - `split.outdirMode`：`same`（与源文件同目录）| `custom`（用 `outdir`）
 - `split.markSource`：切分成功后怎么处置原片，取值见下节。
 - `split.sourceDir`：`markSource: "move"` 时用的归档子目录名（**单层目录名**，
@@ -384,6 +391,8 @@
 - `status`：`queued` | `running` | `success` | `failed` | `canceled` | `skipped`
 - `phase`：`waiting` | `probe` | `splitting` | `verifying` | `marking` | `done`
 - `trigger`：`watch` | `manual` | `schedule` | `retry`
+- `mode` / `usedMode`：正常都是 `copy`。**保留这两个字段只为让历史任务仍能如实显示**
+  （早期版本可能是 `auto` 或 `bytes`），它们不再是可配置项。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -397,7 +406,47 @@
 
 ---
 
-## 6. 撤销分割
+## 6. 处理失败的文件
+
+切不动的文件（格式不支持、读不出时长、ffmpeg 报错、切完的段校验不过）
+**一律保留原片** —— 本工具不会因为处理失败而改名、移动或删除源文件。
+失败的原因记在任务上，同时也登记到这份清单里，供页面集中展示。
+
+为什么要有一份独立的记录：自动扫描每隔几分钟就会再次看到那些文件，
+没有这层记忆的话就是「入队 → 失败 → 再入队」无限循环，任务列表会被同一个
+文件刷满。判断「还是同一个文件」的依据是 **大小 + 修改时间**：
+两者都没变就不再入队；文件被替换或改动过（用户换片源、重新拷贝）则**自动**
+重新尝试一次，不需要人工清记录。
+
+```json
+// GET /api/failures
+{
+  "total": 1,
+  "items": [
+    {
+      "path": "/vol1/media/inbox/IMG_0001.mp4",
+      "name": "IMG_0001.mp4",
+      "size": 8192,
+      "mtime": 1758470000.0,
+      "reason": "无法读取视频时长",
+      "jobId": "job_9f16018c",
+      "at": "2026-09-22T04:10:00+08:00"
+    }
+  ]
+}
+```
+- 列表按失败时间倒序；`GET` 时会顺手剔除「文件已经不在」的记录（用户自己删了
+  或改名了），只留下还能动手的对象。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/failures?limit=500` | `{total, items:[Failure]}` |
+| POST | `/api/failures/retry` | body `{path}`。忘掉失败记录后重新入队；这是**手动**入口，不看 `scanMode`。原片处理方式按该文件所属监控目录的设置（取最长匹配），找不到就用系统默认 |
+| POST | `/api/failures/clear` | body `{paths:[...]}`，不传则清空。**只删记录，不动磁盘文件**；清掉后下次扫描会重新尝试，仍失败则再次出现在清单里 |
+
+---
+
+## 7. 撤销分割
 
 ### POST /api/undo/preview
 body：`{ "path": "/vol1/media/inbox", "recursive": true }`
@@ -432,6 +481,9 @@ body：`{ "path": "/vol1/media/inbox", "recursive": true }`
   彻底隐身（扫描会跳过它们，`groups` 和 `orphans` 里也都没有它们），
   用户只能去命令行改名才能让它们重新被处理。
 - `orphans`：反过来的情况——有切片、但找不到对应的原片。
+- `mode`：`copy`（时长核对通过）| `bytes`（切片字节之和与原片完全一致）| `?`（判不出来，
+  即校验不通过 → 禁止删除切片）。它是**扫描时按产物形态判出来的**，与设置无关：
+  新切出来的都是 copy，但目录里可能还留着早期用 bytes 切过的组，判定逻辑必须保留。
 
 ### POST /api/undo/apply
 
@@ -461,7 +513,7 @@ body：
 
 ---
 
-## 7. WebSocket
+## 8. WebSocket
 
 `ws://<host>/api/ws`，服务端单向推送 JSON 文本帧。连接建立后先收到一条 `hello`。
 前端断线后按 3 秒间隔重连。
@@ -481,7 +533,7 @@ body：
 
 ---
 
-## 8. 前端约定
+## 9. 前端约定
 
 - 路由：`/`（概览）、`/watch`（监控目录）、`/jobs`（任务队列）、`/settings`（设置）。
   撤销分割是监控目录的**子页面**，路由为 `/watch/undo`（老地址 `/undo` 自动重定向过去）。

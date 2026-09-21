@@ -304,7 +304,7 @@ def main() -> int:
         # 阈值调小 + 稳定检测调短：文件刚传上去要等一会儿才被认为「写完了」，
         # 默认 60 秒会让每一轮都白等
         s = dict(original)
-        s["split"] = dict(original["split"], size=SPLIT_SIZE, mode="auto")
+        s["split"] = dict(original["split"], size=SPLIT_SIZE)
         s["watch"] = dict(original["watch"], settleSeconds=SETTLE)
         st, saved = call("PUT", "/api/settings", s)
         print("    临时设置：阈值 %s ｜ 稳定检测 %ss（收尾会还原）"

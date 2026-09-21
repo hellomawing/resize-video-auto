@@ -36,10 +36,9 @@ def call(method, path, body=None, timeout=90):
             return e.code, raw
 
 
-print("1) 把阈值放宽到 6M，让关键帧对齐有余量（不然又会退化成字节切割）")
+print("1) 把阈值放宽到 6M，让关键帧对齐有余量（不然每段都会超阈值、反复重切）")
 st, s = call("GET", "/api/settings")
 s["split"]["size"] = "6M"
-s["split"]["mode"] = "auto"
 s["watch"]["settleSeconds"] = 8
 st, s = call("PUT", "/api/settings", s)
 print("   size=%s settle=%s -> HTTP %s" % (s["split"]["size"], s["watch"]["settleSeconds"], st))

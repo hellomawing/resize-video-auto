@@ -116,7 +116,9 @@ def enqueue(src, trigger: str = "manual", watchpoint_id: str = None,
         "progress": 0.0,
         "parts_total": 0,
         "parts_done": 0,
-        "mode": settings["split"].get("mode"),
+        # 固定流拷贝。这列保留是为了让老任务记录（曾经的 auto/bytes）仍能正常显示，
+        # 也方便将来真的需要区分时不用再改表结构。
+        "mode": "copy",
         "used_mode": None,
         "trigger": trigger,
         "watchpoint_id": watchpoint_id,

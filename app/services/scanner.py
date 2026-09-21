@@ -125,6 +125,24 @@ def build_spec(settings: dict, extra_archive_dirs=None) -> dict:
     }
 
 
+def _unchanged_since_failure(path: Path, size: int, failed: dict) -> bool:
+    """
+    文件是否和上次失败时**一模一样**。
+
+    比的是「大小 + 修改时间」，不是内容：前者两次 stat 就有，后者要读整个文件。
+    对本用途（判断用户有没有换掉这个片源）足够 —— 就算真有「大小和 mtime 都
+    相同、内容却不同」的文件，它的可切性也一样，重试与否结果不会有区别。
+    容差取 1ms：mtime 是浮点数，不同文件系统/语言间来回转换会给末位带来噪声。
+    """
+    if int(failed.get("size") or 0) != int(size):
+        return False
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    return abs(mtime - float(failed.get("mtime") or 0)) < 0.001
+
+
 def consider_file(path, spec: dict, trigger: str,
                   watchpoint_id: str = None,
                   mark_override: dict = None,
@@ -164,6 +182,17 @@ def consider_file(path, spec: dict, trigger: str,
         return "skipped", "小于最小体积限制"
     if not spec["all"] and size <= spec["threshold"]:
         return "skipped", "未超过大小阈值，无需切分"
+
+    # 上次没切成功的文件：只要它一个字节都没变，就不要再送进队列。
+    # 自动扫描每隔几分钟就会看到它，不拦的话就是「入队 → 失败 → 再入队」，
+    # 任务列表会被同一个文件反复刷屏，而真正需要处理的新文件被挤下去。
+    # 文件变了（换了片源、重新拷了一遍）则自动放行 —— 那多半就是用户在
+    # 用「替换文件」的方式解决问题，没道理还拦着。
+    failed = db.failure_for(path)
+    if failed is not None:
+        if _unchanged_since_failure(path, size, failed):
+            return "skipped", "上次处理失败，已跳过（见「处理失败的文件」）"
+        db.forget_failure(path)
 
     ok, reason = tracker.check(path, spec["settle"])
     if not ok:

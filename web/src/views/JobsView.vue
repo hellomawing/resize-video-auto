@@ -7,11 +7,12 @@ import Modal from '../components/Modal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import LogViewer from '../components/LogViewer.vue'
 import { listJobs, getJobLog, retryJob, cancelJob, deleteJob, clearJobs } from '../api/jobs'
+import { listFailures, retryFailure, clearFailures } from '../api/failures'
 import { useToast } from '../composables/useToast'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useJobStore } from '../composables/useJobStore'
 import { formatBytes, formatDateTime, formatDuration } from '../composables/useFormat'
-import type { Job, JobStatus } from '../api/types'
+import type { FailureRecord, Job, JobStatus } from '../api/types'
 
 const toast = useToast()
 const ws = useWebSocket()
@@ -39,6 +40,13 @@ const detailId = ref<string | null>(null)
 const logLoading = ref(false)
 const deleteTarget = ref<Job | null>(null)
 const clearConfirm = ref(false)
+
+// 「处理失败的文件」：切不动的原片原样留在磁盘上，清单只是登记与解释。
+// 页面顶部只有清单非空时才出现，平时不占地方。
+const failures = ref<FailureRecord[]>([])
+const failOpen = ref(true)
+const failBusy = ref('')
+const failClearConfirm = ref(false)
 
 const TRIGGER_LABEL: Record<Job['trigger'], string> = {
   watch: '监控',
@@ -92,6 +100,57 @@ async function load(): Promise<void> {
     toast.error(e instanceof Error ? e.message : '加载任务列表失败')
   } finally {
     loading.value = false
+  }
+}
+
+/**
+ * 失败清单是辅助信息，加载失败不该把任务列表一起拖垮 —— 所以单独 try，
+ * 出错就保持上一次的内容。
+ */
+async function loadFailures(): Promise<void> {
+  try {
+    const res = await listFailures()
+    failures.value = res.items
+  } catch {
+    // 忽略：任务队列本身仍可正常使用
+  }
+}
+
+async function retryFailureItem(f: FailureRecord): Promise<void> {
+  failBusy.value = f.path
+  try {
+    await retryFailure(f.path)
+    toast.success('已重新入队，等待切分')
+    await Promise.all([loadFailures(), load()])
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '重试失败')
+    await loadFailures()
+  } finally {
+    failBusy.value = ''
+  }
+}
+
+async function ignoreFailure(f: FailureRecord): Promise<void> {
+  failBusy.value = f.path
+  try {
+    await clearFailures([f.path])
+    toast.success('已从列表移除（磁盘文件未改动）')
+    await loadFailures()
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '操作失败')
+  } finally {
+    failBusy.value = ''
+  }
+}
+
+async function confirmIgnoreAllFailures(): Promise<void> {
+  try {
+    await clearFailures()
+    toast.success('已清空失败清单（磁盘文件未改动）')
+    failClearConfirm.value = false
+    await loadFailures()
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '操作失败')
   }
 }
 
@@ -178,15 +237,23 @@ async function confirmClear(): Promise<void> {
 }
 
 // 任务实时事件到达时，若当前页不含该任务也刷新一次（保持总数与统计准确）
-function onWsMessage(msg: { type: string }): void {
+function onWsMessage(msg: { type: string; job?: Job }): void {
   if (msg.type === 'job.created' || msg.type === 'job.updated' || msg.type === 'job.progress') {
     if (detailId.value === null) void load()
+  }
+  // 任务收尾都会影响失败清单：失败会新增一条，成功/取消会清掉一条。
+  // 只在终态刷新，避免每来一次进度事件就打一遍接口。
+  const status = msg.job?.status
+  if (msg.type === 'job.updated' && (status === 'failed' || status === 'success' ||
+      status === 'canceled')) {
+    void loadFailures()
   }
 }
 let unsub: (() => void) | null = null
 
 onMounted(() => {
   void load()
+  void loadFailures()
   unsub = ws.on(onWsMessage)
 })
 onUnmounted(() => unsub?.())
@@ -211,6 +278,51 @@ const columns = [
         <div class="page-subtitle">共 {{ total }} 个任务</div>
       </div>
       <button class="btn" @click="clearConfirm = true">清理已完成</button>
+    </div>
+
+    <!--
+      处理失败的文件：切不动的文件原样留在磁盘上（本工具绝不因为失败而改动原片），
+      这里集中列出来 —— 否则用户只能一条条翻任务日志才知道哪些没处理成。
+      清单为空时整块不出现。
+    -->
+    <div v-if="failures.length" class="card fail-panel">
+      <div class="fail-head">
+        <div class="fail-title">
+          <h2 class="card-title">处理失败的文件</h2>
+          <span class="fail-count">{{ failures.length }}</span>
+        </div>
+        <div class="row">
+          <button class="btn btn--sm" @click="failOpen = !failOpen">
+            {{ failOpen ? '收起' : '展开' }}
+          </button>
+          <button class="btn btn--sm" @click="failClearConfirm = true">全部忽略</button>
+        </div>
+      </div>
+      <div class="field-hint fail-hint">
+        这些文件没能完成无损切分，<strong>原片已原样保留</strong> —— 没有被改名、移动或删除。
+        「重试」会再试一次；「忽略」只是把它们从这份清单里去掉，不碰磁盘文件。
+        文件一旦被替换或改动（大小或修改时间变了），后端会自动重新尝试，不必手动清理记录。
+      </div>
+      <div v-if="failOpen" class="fail-list">
+        <div v-for="f in failures" :key="f.path" class="fail-item">
+          <div class="fail-main">
+            <div class="fail-name mono" :title="f.path">{{ f.name }}</div>
+            <div class="fail-reason">{{ f.reason }}</div>
+            <div class="fail-meta faint">
+              {{ formatBytes(f.size) }} · 失败于 {{ formatDateTime(f.at) }}
+              <template v-if="f.jobId"> · 任务 {{ f.jobId }}</template>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn btn--sm" :disabled="failBusy === f.path" @click="retryFailureItem(f)">
+              重试
+            </button>
+            <button class="btn btn--sm" :disabled="failBusy === f.path" @click="ignoreFailure(f)">
+              忽略
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 筛选 -->
@@ -347,6 +459,19 @@ const columns = [
         <button class="btn btn--danger" @click="confirmClear">清理</button>
       </template>
     </Modal>
+
+    <!-- 清空失败清单前问一句：虽然不动文件，但清掉之后提示就没了 -->
+    <Modal v-model="failClearConfirm" title="清空失败清单">
+      <p>将把 {{ failures.length }} 条失败记录从清单里移除。</p>
+      <p class="faint">
+        只会删记录，<strong>不会动磁盘上的任何文件</strong>。被移出清单的文件如果还在监控目录里，
+        下次扫描会重新尝试；仍然切不动的话，它会再次出现在这份清单里。
+      </p>
+      <template #footer>
+        <button class="btn" @click="failClearConfirm = false">取消</button>
+        <button class="btn btn--primary" @click="confirmIgnoreAllFailures">确认移除</button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -355,6 +480,61 @@ const columns = [
   display: flex;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
+}
+/* 「处理失败的文件」——只在清单非空时出现的置顶卡片 */
+.fail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-1);
+}
+.fail-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.fail-count {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+.fail-hint {
+  padding: 0 var(--space-4) var(--space-3);
+}
+.fail-list {
+  border-top: 1px solid var(--color-border);
+}
+.fail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+.fail-item:last-child {
+  border-bottom: none;
+}
+.fail-main {
+  min-width: 0;
+}
+.fail-name {
+  font-size: var(--font-size-sm);
+  word-break: break-all;
+}
+.fail-reason {
+  font-size: var(--font-size-sm);
+  color: var(--color-danger);
+  margin-top: 2px;
+  word-break: break-word;
+}
+.fail-meta {
+  font-size: var(--font-size-xs);
+  margin-top: 2px;
 }
 .card-loading {
   display: flex;
