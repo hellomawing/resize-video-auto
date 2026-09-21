@@ -25,8 +25,8 @@ undo_split.py —— 撤销 video_splitter.py 的分割动作（Windows / macOS 
     * 原片改回原名时，如果目标名已被占用，会跳过并报告，绝不覆盖。
 
 用法：
-    python undo_split.py "C:\\Users\\hello\\Desktop\\DJI_001"            # 预览
-    python undo_split.py "C:\\Users\\hello\\Desktop\\DJI_001" --yes      # 执行
+    python undo_split.py "C:\\Users\\me\\Desktop\\DJI_001"            # 预览
+    python undo_split.py "C:\\Users\\me\\Desktop\\DJI_001" --yes      # 执行
     python undo_split.py <目录> --keep-origin                            # 只校验，保留原片名
     python undo_split.py <目录> --trash                                  # 切片移入回收站而非直接删除
 """
@@ -404,7 +404,7 @@ def main(argv=None) -> int:
     folders = [Path(f) for f in args.folders if str(f).strip()]
     if not folders:
         log("请给出要处理的文件夹路径。")
-        log("例如：python undo_split.py \"C:\\Users\\hello\\Desktop\\DJI_001\"")
+        log("例如：python undo_split.py \"C:\\Users\\me\\Desktop\\DJI_001\"")
         return 2
 
     apply_changes = bool(args.yes)

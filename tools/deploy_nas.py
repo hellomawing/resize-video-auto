@@ -4,8 +4,12 @@
 把当前源码更新部署到飞牛 NAS 上。
 
 用法：
-    export NAS_HOST=192.168.5.188 NAS_PORT=7788 NAS_USER=admin NAS_PASS='<密码>'
     python tools/deploy_nas.py
+
+凭据从 deploy/.nas-credentials 自动读取（环境变量优先），正常情况下不需要
+export 任何东西。该文件被 .gitignore 排除、只在本机存在，**开源前必须删掉并
+轮换密码**——清单见仓库根目录 OPEN-SOURCE-CHECKLIST.md，
+自检跑 python tools/check_release_ready.py。
 
 为什么不用 docker push / pull：这台 NAS 连不上 registry-1.docker.io，只能
 把源码传上去在它本地构建。全新构建实测约 19 分钟（几乎全耗在 Debian 装
@@ -240,6 +244,11 @@ def main() -> int:
         log("\n[dry-run] 没有连接 NAS，什么都没改。")
         return 0
 
+    src = ssh_run.cred_source()
+    if src.endswith(".nas-credentials"):
+        log("\n凭据来自 %s（仅本机存在；开源前需删除并轮换密码）" % src)
+    else:
+        log("\n凭据来自%s" % src)
     cli = ssh_run.connect()
     try:
         log("\n[2/6] 上传并解包")

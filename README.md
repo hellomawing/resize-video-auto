@@ -155,7 +155,6 @@ docker build -f docker/Dockerfile -t video-splitter:1.0.0 .
 上面那串手工步骤已经固化成了脚本，改完代码重新部署只要跑它：
 
 ```bash
-export NAS_HOST=192.168.5.188 NAS_PORT=7788 NAS_USER=admin NAS_PASS='<密码>'
 python tools/deploy_nas.py
 ```
 
@@ -180,7 +179,12 @@ python tools/deploy_nas.py
 > `deploy/` **不在源码包里**，所以 NAS 上的 `src/deploy/.env` 不会被覆盖，脚本也不会
 > 删它。里面的 `PGID` 经常和 `PUID` 不一样（实测这台飞牛是 `1000:1001`）。
 >
-> 密码只走环境变量，不进任何文件——所以每开一个新的终端都要重新 `export` 一次。
+> 凭据放在 `deploy/.nas-credentials`（`KEY=VALUE` 格式，已被 `.gitignore` 排除），
+> 所以装好一次之后就不用每次 `export` 了。临时换一台机器时用环境变量覆盖即可，
+> 环境变量优先级更高。
+>
+> ⚠️ 该文件里是**明文密码**。开源 / 发布前要删掉它并轮换 NAS 密码——
+> 清单见 `OPEN-SOURCE-CHECKLIST.md`，机械自检跑 `python tools/check_release_ready.py`。
 
 ### 2. 在 NAS 上部署
 
@@ -674,12 +678,16 @@ python tools/verify_scanmode.py         # 扫描方式与定时任务的重排
 
 ### 部署到 NAS
 
+凭据读 `deploy/.nas-credentials`，装好一次就不用再 export：
+
 ```bash
-export NAS_HOST=... NAS_PORT=7788 NAS_USER=admin NAS_PASS='...'
-python tools/deploy_nas.py            # 更新部署，见「1-C」
+python tools/deploy_nas.py                # 更新部署，见「1-C」
 python tools/ssh_run.py exec 'uname -a'   # 单条命令 / put / get / detach
-python tools/nas_verify.py            # 部署后对接口做一轮验证
+python tools/nas_verify.py                # 部署后对接口做一轮验证
 ```
+
+要临时换机器或换账号，直接拿环境变量覆盖即可（优先级高于文件）：
+`NAS_HOST=... NAS_PORT=7788 NAS_USER=admin NAS_PASS='...' python tools/deploy_nas.py`
 
 ### 重新生成图标
 
