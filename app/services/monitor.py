@@ -50,6 +50,10 @@ class _Handler(FileSystemEventHandler):
     def _submit(self, path: str, is_directory: bool) -> None:
         if is_directory:
             return
+        if engine.is_internal_temp(path):
+            # 本工具自己切分中途写下的分段，扩展名也是 .mp4，不排除的话
+            # 会被当成新视频入队（工作目录通常建在监控目录之外，这里是兜底）
+            return
         if Path(path).suffix.lower() not in self._exts:
             return
         self._service.submit_file(path, self._wp_id)

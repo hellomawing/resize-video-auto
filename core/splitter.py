@@ -42,6 +42,12 @@ from pathlib import Path
 DEFAULT_THRESHOLD = "3.9G"          # 比 FAT32 的 4GiB 上限留约 100MB 余量
 BUF_SIZE = 8 * 1024 * 1024          # 读写缓冲 8MB
 
+# 切分中途的工作目录前缀。它必须建在「和输出目录同一个文件系统」上：
+# 分段先落进工作目录，全部校验通过后再 shutil.move 成最终文件名，跨文件系统
+# 的 move 不是改名而是真正的拷贝，整套切片会多读一遍多写一遍（实测让一次
+# 6.5G 的切分从 2 分多钟变成 4 分半）。
+TMP_PREFIX = ".vsplit-tmp-"
+
 DEFAULT_EXTS = (
     ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv",
     ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".rmvb", ".vob",
@@ -511,6 +517,68 @@ def split_by_bytes(src: Path, threshold: int, outdir: Path,
     return [(p, w) for p, w in produced], "bytes"
 
 
+# ---------------------------------------------------------------- 工作目录
+
+def _sweep_stale_workdirs(base: Path, keep: Path) -> None:
+    """
+    清掉上次残留的临时工作目录。
+
+    正常路径下每次切分结束都会自己删掉工作目录（成功、失败、取消都删），
+    但容器被 kill -9、断电这类硬中断走不到清理代码，留下的就是几个 GB 的
+    垃圾。所以下次在同一位置开工作目录时顺手扫一遍，只删明显过期的
+    （超过一天），避免误伤别的进程正在用的目录。
+    """
+    try:
+        cutoff = time.time() - 24 * 3600
+        for d in sorted(base.glob(TMP_PREFIX + "*")):
+            if d == keep or not d.is_dir():
+                continue
+            try:
+                if d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+                    log("       清理上次残留的工作目录：%s" % d.name)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
+def make_workdir(outdir: Path) -> Path:
+    """
+    建一个切分用的临时工作目录，**优先和输出目录在同一个文件系统上**。
+
+    为什么非要同文件系统：分段是先写进工作目录、最后再 shutil.move 成最终
+    文件名的。跨文件系统的 move 不是改名，而是老老实实读一遍写一遍——整套
+    切片等于白搬一次。实测在这块 NAS 上，6.5G 的片子因此从约 2 分钟变成
+    4 分半，一半时间花在搬数据上。
+
+    选址顺序：输出目录的上一级 -> 输出目录本身 -> 系统临时目录（兜底）。
+    上一级优先，是因为它通常落在监控目录之外，实时监听压根看不见；
+    万一前两个都不满足（比如输出目录本身就是挂载点、上一级不可写），
+    退回系统临时目录，行为与老版本完全一致。
+    """
+    outdir = Path(outdir)
+    try:
+        want_dev = os.stat(outdir).st_dev
+    except OSError:
+        want_dev = None
+
+    for base in (outdir.parent, outdir):
+        try:
+            if want_dev is not None and os.stat(base).st_dev != want_dev:
+                continue
+            tmpdir = Path(tempfile.mkdtemp(prefix=TMP_PREFIX, dir=base))
+        except OSError:
+            continue
+        _sweep_stale_workdirs(base, tmpdir)
+        dbg("工作目录：%s（与输出同一文件系统，最后一步只改名不搬数据）" % tmpdir)
+        return tmpdir
+
+    tmpdir = Path(tempfile.mkdtemp(prefix=TMP_PREFIX))
+    dbg("工作目录：%s（找不到与输出同文件系统的位置，退回系统临时目录）" % tmpdir)
+    return tmpdir
+
+
 # ---------------------------------------------------------------- 模式二：ffmpeg 流拷贝
 
 class FatalSplitError(RuntimeError):
@@ -761,7 +829,7 @@ def split_by_ffmpeg(src: Path, threshold: int, outdir: Path, dry_run: bool,
     last_error = ""
     for attempt in range(6):
         check_cancel()
-        tmpdir = Path(tempfile.mkdtemp(prefix="vsplit_"))
+        tmpdir = make_workdir(outdir)
         mapping_switched = False
         try:
             if seg_seconds:
@@ -972,6 +1040,20 @@ def is_slice_or_origin(path: Path) -> bool:
     return classify_own_product(path) is not None
 
 
+def is_internal_temp(path) -> bool:
+    """
+    判断路径是否落在切分中途的工作目录里。
+
+    这些是还没写完的分段文件，名字和普通视频一模一样（part_00001.mp4），
+    光靠扩展名和产物后缀都认不出来，所以扫描器与实时监听必须显式排除，
+    否则它们会被当成新视频入队，切出一堆垃圾。
+    """
+    try:
+        return any(str(part).startswith(TMP_PREFIX) for part in Path(path).parts)
+    except Exception:
+        return False
+
+
 def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
     """
     扫描目录下的视频文件，自动跳过自己的产物和归档目录。
@@ -995,6 +1077,9 @@ def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
         for p in it:
             try:
                 if not p.is_file() or p.suffix.lower() not in exts:
+                    continue
+                if is_internal_temp(p):
+                    # 切分中途的临时分段，不是用户的文件，也没必要惊动 on_skip
                     continue
                 kind = classify_own_product(p)
                 if kind:

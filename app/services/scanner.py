@@ -123,6 +123,8 @@ def consider_file(path, spec: dict, trigger: str,
             return "skipped", "文件不存在"
         if path.suffix.lower() not in spec["exts"]:
             return "skipped", "不是要处理的视频格式"
+        if engine.is_internal_temp(path):
+            return "skipped", "是切分中途的临时分段"
         if engine.is_slice_or_origin(path):
             return "skipped", "是本工具产生的切片或已标记的原片"
         if spec["source_dir"] in path.parts:
