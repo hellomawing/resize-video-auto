@@ -92,6 +92,11 @@ h4 {
   font-size: var(--font-size-lg);
   margin-bottom: var(--space-4);
 }
+/* 卡片开头的整体说明：紧跟标题（抵消一点标题的下边距），与第一个字段留出正常间距 */
+.card-intro {
+  margin-top: calc(-1 * var(--space-2));
+  margin-bottom: var(--space-4);
+}
 
 /* ---------- 按钮 ---------- */
 .btn {
@@ -200,6 +205,13 @@ h4 {
 .field-hint {
   font-size: var(--font-size-xs);
   color: var(--color-text-faint);
+}
+/* 提示里需要被看见的那种：当前选项有副作用、或某项设置不会生效 */
+.field-hint--warn {
+  color: var(--color-warning);
+}
+.field-hint--danger {
+  color: var(--color-danger);
 }
 
 /* ---------- 表格 ---------- */
