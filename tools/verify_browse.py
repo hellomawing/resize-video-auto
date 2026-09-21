@@ -12,7 +12,9 @@ fnOS 的存储池根目录 `/vol1` 权限位是 000，`getfacl` 连一条扩展 
   1. 白名单里不存在的根不再混进 roots（否则下拉里全是点了就报错的死入口）
   2. 新增 shortcuts（常用目录）：已添加的监控目录 / 最近任务目录 / 系统输出目录，
      点一下直达，绕开不可枚举的那一层
-  3. 列不出来时的错误文案必须给出路，而不是一句「没有权限」把人堵死
+  3. 列不出来时的错误文案必须给出路，而不是一句「没有权限」把人堵死；
+     文案也不再指引「直接输入完整路径」—— 选择器已去掉手动输入入口，
+     撤销页更是直接换成「监控目录」下拉框（不走 /api/browse）
 
     python tools/verify_browse.py
 """
@@ -146,7 +148,10 @@ with TestClient(app) as client:
     has("error 说明只是不能枚举", data["error"], "不代表")
     has("error 提到 fnOS", data["error"], "fnOS")
     has("error 指向常用目录", data["error"], "常用目录")
-    has("error 指向手动输入", data["error"], "输入完整路径")
+    has("error 给出「加全新目录」的出路", data["error"], "可访问根目录白名单")
+    # 选择器已经不再提供手动输入路径的入口，文案里就别再让人去敲了
+    check("error 不再指向手动输入",
+          "输入完整路径" in (data["error"] or ""), False)
 
     print("== 5. 路径不存在 / 越界 ==")
     data = client.get("/api/browse", params={"path": str(MEDIA / "nope")}).json()

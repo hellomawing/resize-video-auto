@@ -1,22 +1,83 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Modal from '../components/Modal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import DataTable from '../components/DataTable.vue'
 import Toggle from '../components/Toggle.vue'
-import DirPicker from '../components/DirPicker.vue'
 import { undoPreview, undoApply } from '../api/undo'
+import { listWatchpoints } from '../api/watchpoints'
 import { useToast } from '../composables/useToast'
 import { formatBytes, formatDateTime } from '../composables/useFormat'
-import type { UndoPreview, UndoResult, UndoLoneOrigin } from '../api/types'
+import type { UndoPreview, UndoResult, UndoLoneOrigin, WatchPoint } from '../api/types'
 
 const toast = useToast()
 
 const path = ref('')
 const recursive = ref(true)
-const pickerOpen = ref(false)
 const previewing = ref(false)
 const preview = ref<UndoPreview | null>(null)
+
+// 目标目录只从「监控目录」里选，不提供自由浏览。
+// 原因：fnOS 的存储池根目录 /vol1 不可枚举（权限位 000），「从根逐级点」第一级就是
+// 死路，用户点进去只会看到「没有权限」然后卡住（详见 DirPicker.vue 的注释）。
+// 而撤销的对象本来就只可能落在已经加进来监控的那些目录里，所以与其让人去浏览，
+// 不如直接把候选列全 —— 少一步操作，也少一个踩坑的机会。
+const watchpoints = ref<WatchPoint[]>([])
+const loadingWatchpoints = ref(false)
+
+async function loadWatchpoints(): Promise<void> {
+  loadingWatchpoints.value = true
+  try {
+    const list = await listWatchpoints()
+    watchpoints.value = list
+    // v-model 的值若不在任何 option 里，浏览器会「显示」第一项但 model 仍是空串，
+    // 于是界面上看着选好了、点预览却报「请先选择目录」。所以这里显式落一个值。
+    if (!list.some((w) => w.path === path.value)) {
+      path.value = list[0]?.path ?? ''
+    }
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '读取监控目录失败')
+  } finally {
+    loadingWatchpoints.value = false
+  }
+}
+
+onMounted(loadWatchpoints)
+
+/** 下拉里显示什么：有备注就用「备注 — 路径」，否则只显示路径 */
+function label(w: WatchPoint): string {
+  return w.note ? `${w.note} — ${w.path}` : w.path
+}
+
+// 选中的目录（必然是某条监控目录）。
+const picked = computed(() => watchpoints.value.find((w) => w.path === path.value) ?? null)
+
+const SCAN_MODE_LABELS: Record<WatchPoint['scanMode'], string> = {
+  realtime: '实时监听',
+  interval: '定时扫描',
+  daily: '每天定时',
+  manual: '仅手动',
+}
+
+/**
+ * 「撤销完会不会马上被重切」的当场提醒。
+ *
+ * 撤销的校验依据就是「原片已改名成 #origin」这个隐式标记；一旦把名字改回去，
+ * 在扫描器眼里它就是一个还没处理过的普通视频 —— 于是撤销刚做完就会被重新切一遍
+ * （真机实测 37 秒后开始），看起来像「撤销没生效」。
+ *
+ * 目录选择器改成监控目录下拉框之后这条提醒成了必须：候选目录全是自动扫描的，
+ * 而以前还能选一个不在监控里的目录避开这件事。
+ */
+const rescanWarning = computed(() => {
+  const mode = picked.value?.scanMode
+  if (!mode || mode === 'manual') return ''
+  const when = mode === 'realtime' ? '被立刻重新分割一次'
+    : mode === 'interval' ? '在下一次自动扫描时被重新分割'
+      : '在下一次每天定时扫描时被重新分割'
+  return `该目录是「${SCAN_MODE_LABELS[mode]}」：撤销时若保留了「恢复原片名」，`
+    + `这个原片会${when}。想避开的话，先在「监控目录」页把它改成「仅手动」。`
+})
 
 // 勾选参与本次撤销的分组（仅 ok 的可勾选，bad 恒为禁用并默认不勾选）
 const selected = ref<Set<string>>(new Set())
@@ -51,7 +112,9 @@ function pickAllOk(): void {
 
 async function runPreview(): Promise<void> {
   if (!path.value) {
-    toast.error('请先选择要撤销的目录')
+    toast.error(watchpoints.value.length === 0
+      ? '还没有监控目录，请先到「监控目录」页添加一个'
+      : '请先选择要撤销的目录')
     return
   }
   previewing.value = true
@@ -151,10 +214,17 @@ const columns = [
     <div class="card">
       <div class="field" style="margin-bottom: 0">
         <label class="field-label">目标目录</label>
-        <div class="row">
-          <input v-model="path" class="input" placeholder="选择需要撤销分割的目录" />
-          <button class="btn" type="button" @click="pickerOpen = true">浏览…</button>
+        <select v-model="path" class="select" :disabled="watchpoints.length === 0 || loadingWatchpoints">
+          <option v-if="watchpoints.length === 0" value="" disabled>
+            还没有监控目录，请先到「监控目录」页添加
+          </option>
+          <option v-for="w in watchpoints" :key="w.id" :value="w.path">{{ label(w) }}</option>
+        </select>
+        <div class="field-hint">
+          这里只列「监控目录」页里已添加的目录 —— 撤销的对象本来就只会在这些目录里。
+          要处理别处的切片，先去那一页把它的目录加进来。
         </div>
+        <div v-if="rescanWarning" class="field-hint field-hint--warn">{{ rescanWarning }}</div>
       </div>
       <div class="row" style="margin-top: var(--space-3)">
         <Toggle v-model="recursive" />
@@ -256,8 +326,6 @@ const columns = [
         <div v-for="(p, i) in result.problems" :key="i" class="problem-item">· {{ p }}</div>
       </div>
     </div>
-
-    <DirPicker v-model="path" v-model:open="pickerOpen" />
 
     <!-- 执行二次确认 -->
     <Modal v-model="applyConfirm" title="确认执行撤销（危险）">

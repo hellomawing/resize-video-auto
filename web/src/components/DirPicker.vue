@@ -7,11 +7,14 @@ import type { BrowseResult, DirShortcut } from '../api/types'
 // 目录选择器（弹窗）：基于 /api/browse 逐级浏览，可切换白名单根目录。
 // modelValue 为已选路径；open 控制弹窗显隐。父组件用 v-model 绑定路径、v-model:open 控制开关。
 //
-// 为什么除了「逐级浏览」还要有「常用目录」和「手动输入路径」两个入口：
-// fnOS 这类系统把存储池根目录（/vol1）的权限位设成 000、连一条扩展 ACL 都没有，
-// 内核拒绝对它 readdir —— 于是**从根往下点的第一级就是死的**，用户会看到
-// 「没有权限」并且再也走不动（但直接访问 /vol1/1000/… 完全正常）。
-// 所以这里给两条绕过它的路：点「常用目录」直达，或者把完整路径敲进来。
+// 供「监控目录」页新增/编辑目录时使用（撤销页直接用监控目录下拉框，不走这里）。
+//
+// 为什么要有「常用目录」这一区：fnOS 这类系统把存储池根目录（/vol1）的权限位设成 000、
+// 连一条扩展 ACL 都没有，内核拒绝对它 readdir —— 于是**从根往下点的第一级就是死的**，
+// 用户会看到「没有权限」并且再也走不动（但直接访问 /vol1/1000/… 完全正常）。
+// 所以给一条绕过它的路：点「常用目录」里的已添加监控目录 / 最近任务目录直达。
+// 这也是本弹窗**不提供手动输入路径**的原因 —— 路径入口只保留「下拉 + 逐级点」一种，
+// 不再让人有机会敲进一条走不通的路径。
 const props = defineProps<{
   modelValue: string
   open: boolean
@@ -30,8 +33,6 @@ const shortcuts = ref<DirShortcut[]>([])
 const parent = ref('')
 const error = ref<string | null>(null)
 const loading = ref(false)
-// 手动输入的完整路径
-const typed = ref('')
 
 const KIND_LABELS: Record<DirShortcut['kind'], string> = {
   watchpoint: '监控',
@@ -50,7 +51,6 @@ async function load(path: string): Promise<void> {
     shortcuts.value = res.shortcuts || []
     parent.value = res.parent ?? ''
     current.value = res.path
-    typed.value = res.path
     if (res.error) error.value = res.error
   } catch (e) {
     // 这里不再另弹 toast：错误就显示在弹窗里，用户本来就在看着它
@@ -74,15 +74,6 @@ function chooseDir(path: string): void {
   void load(path)
 }
 
-function goto(): void {
-  const target = typed.value.trim()
-  if (!target) {
-    error.value = '请先输入完整路径（以 / 开头，例如 /vol1/1000/video-split-in）'
-    return
-  }
-  void load(target)
-}
-
 function confirm(): void {
   emit('update:modelValue', current.value)
   emit('update:open', false)
@@ -104,16 +95,6 @@ function cancel(): void {
           <option v-for="r in roots" :key="r" :value="r">{{ r }}</option>
           <option v-if="current && !roots.includes(current)" :value="current">{{ current }}</option>
         </select>
-      </div>
-
-      <div class="picker-bar">
-        <input
-          v-model="typed"
-          class="input"
-          placeholder="直接输入完整路径，如 /vol1/1000/video-split-in"
-          @keyup.enter="goto"
-        />
-        <button class="btn" :disabled="loading" @click="goto">进入</button>
       </div>
 
       <div v-if="error" class="picker-error">{{ error }}</div>
