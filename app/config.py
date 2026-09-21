@@ -199,15 +199,109 @@ def _normalize_settings(s: dict) -> dict:
 
 # ---------------------------------------------------------------- 监控目录 / 定时任务
 
+# 监控目录的「扫描方式」。这一个字段同时回答两件事：要不要自动扫、多久扫一次。
+# 之所以不用「启用 + 自动扫描」两个开关，是因为两个开关会组合出「启用了但不自动扫」
+# 这种要停下来想一下的状态；一个下拉反而说得更清楚。
+#
+#   realtime  实时监听（inotify）+ 轮询兜底，文件一落盘就切
+#   interval  每隔 N 小时扫一次，N 只能取 24 的约数（理由见 SCAN_INTERVALS）
+#   daily     每天 HH:MM 扫一次
+#   manual    不自动扫描，只在网页上点「扫描」时才扫
+SCAN_MODES = ("realtime", "interval", "daily", "manual")
+
+# 为什么限定这几档：定时扫描交给 cron 表达式表达（0 */N * * *），
+# N 必须整除 24 才能让「每 N 小时」从 0 点起均匀铺满一天，
+# 否则会出现 22:00 之后 2 小时的空档。固定档位换来的是
+# 「下次扫描时间」能被准确算出来，而且容器重启不会打乱节奏。
+SCAN_INTERVALS = (1, 2, 3, 4, 6, 8, 12, 24)
+
+DEFAULT_SCAN_MODE = "realtime"
+DEFAULT_SCAN_INTERVAL_HOURS = 6
+DEFAULT_SCAN_TIME = "03:00"
+
+
+def _normalize_scan_time(value) -> str:
+    """把 'H:M' / 'HH:MM' 统一成 'HH:MM'，认不出来就退回默认值。"""
+    text = str(value or "").strip()
+    parts = text.split(":")
+    if len(parts) == 2:
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return "%02d:%02d" % (hour, minute)
+        except ValueError:
+            pass
+    return DEFAULT_SCAN_TIME
+
+
+def normalize_watchpoint(item: dict) -> dict:
+    """
+    补齐监控目录的字段并纠正脏值。
+
+    这里同时承担**老数据迁移**：早期版本只有一个 enabled 布尔字段，
+    语义上「启用」= 现在的 realtime，「停用」= 现在的 manual
+    （当时用户停用它的真实意图就是「别自动扫了」，而不是「删掉这个目录」）。
+    """
+    out = dict(item or {})
+    mode = out.get("scanMode")
+    if mode not in SCAN_MODES:
+        out["scanMode"] = (DEFAULT_SCAN_MODE if out.get("enabled", True)
+                           else "manual")
+    # enabled 已经被 scanMode 取代，从存储里彻底去掉，避免两份状态打架
+    out.pop("enabled", None)
+
+    try:
+        hours = int(out.get("scanIntervalHours", DEFAULT_SCAN_INTERVAL_HOURS))
+    except (TypeError, ValueError):
+        hours = DEFAULT_SCAN_INTERVAL_HOURS
+    if hours not in SCAN_INTERVALS:
+        hours = min(SCAN_INTERVALS, key=lambda h: abs(h - hours))
+    out["scanIntervalHours"] = hours
+
+    out["scanTime"] = _normalize_scan_time(out.get("scanTime"))
+    out["recursive"] = bool(out.get("recursive", True))
+    if not isinstance(out.get("note"), str):
+        out["note"] = ""
+    if not isinstance(out.get("path"), str):
+        out["path"] = ""
+    out.setdefault("lastScanAt", None)
+    out.setdefault("videoCount", 0)
+    out.setdefault("createdAt", "")
+    return out
+
+
+def is_auto_scan(wp: dict) -> bool:
+    """该目录是否参与「自动」扫描（实时 / 定时）。manual 与 manual 之外无关。"""
+    return wp.get("scanMode") in ("realtime", "interval", "daily")
+
+
+def scan_cron(wp: dict) -> str | None:
+    """
+    把扫描方式翻译成 5 段 cron；不需要定时扫描的返回 None。
+    放在 config 这一层是为了让 scheduler（排schedule用）和 API（展示下次时间用）
+    共用同一份规则，不会出现「显示的时间和实际执行的时间不一致」。
+    """
+    mode = wp.get("scanMode")
+    if mode == "interval":
+        return "0 */%d * * *" % int(wp.get("scanIntervalHours") or DEFAULT_SCAN_INTERVAL_HOURS)
+    if mode == "daily":
+        hour, minute = _normalize_scan_time(wp.get("scanTime")).split(":")
+        return "%d %d * * *" % (int(minute), int(hour))
+    return None
+
+
 def load_watchpoints() -> list:
     with _lock:
         data = _read_json(WATCHPOINTS_PATH, [])
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return [normalize_watchpoint(item) for item in data if isinstance(item, dict)]
 
 
 def save_watchpoints(items: list) -> None:
     with _lock:
-        _atomic_write(WATCHPOINTS_PATH, items)
+        _atomic_write(WATCHPOINTS_PATH,
+                      [normalize_watchpoint(item) for item in (items or [])])
 
 
 def load_schedules() -> list:

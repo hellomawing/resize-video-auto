@@ -109,7 +109,9 @@ class MonitorService:
         scheduled = 0
         handler_cache: dict[tuple[str, tuple], _Handler] = {}
         for wp in config.load_watchpoints():
-            if not wp.get("enabled", True):
+            # 只有「实时监听」模式才挂 inotify。改成「每隔 N 小时」「每天几点」
+            # 或「仅手动」的目录，扫描由 scheduler 或用户点击驱动，这里一概不碰。
+            if wp.get("scanMode") != "realtime":
                 continue
             path = Path(wp["path"])
             if not path.is_dir():
@@ -185,8 +187,15 @@ class MonitorService:
             self._stop.wait(1.0)
 
     def _poll(self, spec: dict) -> None:
-        """轮询兜底：把启用的监控目录整体扫一遍。"""
-        watchpoints = [w for w in config.load_watchpoints() if w.get("enabled", True)]
+        """
+        轮询兜底：把「实时监听」模式的监控目录整体扫一遍。
+
+        轮询是实时监听的替补（inotify 在 SMB/NFS 上不工作），所以两者绑在同一个
+        模式下；定时扫描的目录由 scheduler 负责，这里扫会把「每隔 6 小时」
+        变成「每 30 秒」，等于设置失效。
+        """
+        watchpoints = [w for w in config.load_watchpoints()
+                       if w.get("scanMode") == "realtime"]
         if not watchpoints:
             return
         for wp in watchpoints:

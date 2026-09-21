@@ -94,7 +94,8 @@
 - `split.all`：true=不按大小筛选，所有视频都切
 - `split.outdirMode`：`same`（与源文件同目录）| `custom`（用 `outdir`）
 - `split.markSource`：`rename` | `move` | `none` | `delete`
-- `watch.realtime`：是否启用 inotify 实时监听（网络共享目录会自动退化为轮询）
+- `watch.realtime`：实时监听（inotify）的**全局能力开关**（网络共享目录会自动退化为轮询）。
+  注意这是全局开关，某个目录要不要用实时监听由它自己的 `scanMode` 决定，两者是「与」的关系。
 - `watch.settleSeconds`：文件稳定检测秒数——大小与修改时间连续这么多秒不变才入队
 - `watch.minSize`：小于该大小的文件直接忽略
 - `watch.allowedRoots`：可访问根目录白名单，约束目录浏览与监控目录添加
@@ -108,24 +109,62 @@
   "id": "wp_ab12cd34",
   "path": "/vol1/media/inbox",
   "recursive": true,
-  "enabled": true,
+  "scanMode": "realtime",
+  "scanIntervalHours": 6,
+  "scanTime": "03:00",
   "note": "相机导入目录",
   "createdAt": "2026-09-20T12:00:00+08:00",
   "lastScanAt": null,
+  "nextScanAt": null,
   "videoCount": 0
 }
 ```
 
+### 扫描方式 `scanMode`
+
+一个字段同时回答「要不要自动扫」「多久扫一次」。**不要**再拆成
+「启用 + 自动扫描」两个开关：两者会组合出「启用了但不自动扫」这种需要
+停下来想一下的状态，而早期版本正是用一个 `enabled` 同时管着自动与手动，
+导致用户取消勾选后连手动扫描都点不动。
+
+| 值 | 含义 | 由谁执行 | `nextScanAt` |
+|---|---|---|---|
+| `realtime` | 实时监听（inotify）+ 轮询兜底，文件一落盘就切 | `monitor` 服务 | `null`（随时） |
+| `interval` | 每隔 N 小时扫一次 | `scheduler` | 下次整点时间 |
+| `daily` | 每天 `scanTime` 扫一次 | `scheduler` | 明天/今天的时间点 |
+| `manual` | **不自动扫描**，只在点「扫描」时处理 | 无 | `null` |
+
+- `scanIntervalHours`：**只能取 1/2/3/4/6/8/12/24**（24 的约数）。
+  只有整除 24，「每 N 小时」才能从每天 0 点起均匀铺满一天，不留空档；
+  换来的好处是容器重启不会打乱节奏，`nextScanAt` 也能被准确算出来。
+  传入其它值会被就近取到最近的合法档位。
+- `scanTime`：`"HH:MM"`，24 小时制。非法值会被纠正为 `"03:00"`。
+- `nextScanAt`：**只读**，不落盘，每次查询时按当前扫描计划实时算出。
+- 老版本 `watchpoints.json` 里的 `enabled` 字段会自动迁移为此字段
+  （`true` → `realtime`，`false` → `manual`），存储中不再保留 `enabled`。
+
+### 自动扫描 vs 手动扫描
+
+两条**互相独立**的路，这一点是刻意设计的：
+
+- **自动**扫描（`realtime` / `interval` / `daily`）由后台服务触发，受 `scanMode` 约束。
+- **手动**扫描（下面两个 `scan` 接口）**完全不受 `scanMode` 限制** ——
+  用户既然亲手点了按钮，就不该再被「仅手动」之类的设置拦住；
+  「仅手动」约束的是自动扫描，不是手动扫描。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/watchpoints` | 列表，返回 `[WatchPoint]` |
-| POST | `/api/watchpoints` | body `{path, recursive, note}`，返回新建对象 |
-| PUT | `/api/watchpoints/{id}` | 局部更新（`recursive`/`enabled`/`note`） |
-| DELETE | `/api/watchpoints/{id}` | 删除 |
-| POST | `/api/watchpoints/{id}/scan` | 立即扫描一次，返回 `{found, queued}` |
+| POST | `/api/watchpoints` | body `{path, recursive, scanMode, scanIntervalHours, scanTime, note}` |
+| PUT | `/api/watchpoints/{id}` | 局部更新（上表除 `path`/`id` 外的字段均可） |
+| DELETE | `/api/watchpoints/{id}` | 删除（想让它别再自动扫请改 `scanMode`，不必删除） |
+| POST | `/api/watchpoints/{id}/scan` | **立即扫描一次**，返回 `{found, queued, skipped, message}` |
+
+`PUT` 会回读一次再返回，因此响应里的 `scanIntervalHours` / `scanTime`
+一定是纠正后的**实际生效值**，前端直接用它刷新界面即可。
 
 ### POST /api/scan
-扫描**全部启用**的监控目录并入队，返回 `{found, queued}`。
+扫描**全部**监控目录并入队（同样不看 `scanMode`），返回 `{found, queued}`。
 
 ---
 
@@ -144,8 +183,13 @@
 }
 ```
 - `cron` 为**标准 5 段** cron 表达式（分 时 日 月 周）。
-- `watchpointIds` 为空数组 = 扫描全部启用的监控目录。
+- `watchpointIds` 为空数组 = 扫描全部监控目录。
 - `cronText` 由后端生成的中文可读描述，前端直接展示。
+
+> 和监控目录「扫描方式」的分工：**扫描方式**决定每个目录平时的节奏
+> （实时 / 每隔 N 小时 / 每天 / 仅手动）；**定时任务**是额外的补充扫描，
+> 适合「目录设成仅手动，但每周一还要全量扫一次」这类需求。两者互不覆盖，
+> 触发时都只是「扫一遍」，不会互相取消。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -247,8 +291,10 @@ body：`{ "path": "...", "recursive": true, "deleteSlices": true, "restoreOrigin
 { "type": "job.log",      "jobId": "job_x", "line": "       原大小：6.00 GB" }
 { "type": "job.progress", "jobId": "job_x", "progress": 0.42, "partsDone": 1, "partsTotal": 3, "phase": "splitting" }
 { "type": "scan.finished","watchpointId": "wp_x", "found": 12, "queued": 3 }
+{ "type": "watchpoint.scan","watchpointId": "wp_x", "path": "/vol1/media/inbox" }
 { "type": "settings.updated" }
 { "type": "schedule.fired","scheduleId": "sc_x", "name": "每天凌晨 3 点" }
+{ "type": "ping",         "serverTime": "2026-09-20T12:39:43+08:00" }
 ```
 
 ---

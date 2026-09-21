@@ -211,8 +211,14 @@ def scan_watchpoint(watchpoint: dict, trigger: str = "manual") -> dict:
 
 
 def scan_all(trigger: str = "manual", watchpoint_ids=None) -> dict:
-    """扫描全部（或指定）启用的监控目录。"""
-    watchpoints = [w for w in config.load_watchpoints() if w.get("enabled", True)]
+    """
+    扫描全部（或指定）监控目录 —— 这是「立即扫描」的入口。
+
+    刻意不看 scanMode：用户已经亲手按下了按钮，就不该再被「仅手动」这类设置
+    拦住——「仅手动」约束的是**自动**扫描，不是手动扫描。两者走两条独立的路，
+    这正是早期版本把「停用」和「不自动扫」混成一个开关时踩过的坑。
+    """
+    watchpoints = list(config.load_watchpoints())
     if watchpoint_ids:
         wanted = set(watchpoint_ids)
         watchpoints = [w for w in watchpoints if w.get("id") in wanted]
@@ -225,7 +231,7 @@ def scan_all(trigger: str = "manual", watchpoint_ids=None) -> dict:
         total["details"].extend(r.get("details") or [])
 
     if not watchpoints:
-        total["message"] = "没有启用的监控目录，请先去「监控目录」页面添加"
+        total["message"] = "还没有配置监控目录，请先去「监控目录」页面添加"
     else:
         total["message"] = "扫描完成：%d 个目录，%d 个视频，入队 %d 个" % (
             len(watchpoints), total["found"], total["queued"])

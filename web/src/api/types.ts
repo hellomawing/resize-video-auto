@@ -90,26 +90,38 @@ export interface Settings {
 }
 
 // ---- 监控目录 ----
+// 扫描方式：realtime 实时监听 | interval 每隔 N 小时 | daily 每天 HH:MM | manual 仅手动
+export type ScanMode = 'realtime' | 'interval' | 'daily' | 'manual'
+
 export interface WatchPoint {
   id: string
   path: string
   recursive: boolean
-  enabled: boolean
+  scanMode: ScanMode
+  scanIntervalHours: number
+  scanTime: string
   note: string
   createdAt: string
   lastScanAt: string | null
+  nextScanAt: string | null
   videoCount: number
 }
 
 export interface WatchPointCreate {
   path: string
   recursive: boolean
+  scanMode: ScanMode
+  scanIntervalHours: number
+  scanTime: string
   note: string
 }
 
 export interface ScanResult {
   found: number
   queued: number
+  skipped: number
+  /** 后端生成的人话总结，直接展示即可，不要在前端另拼一套文案 */
+  message: string
 }
 
 // ---- 定时任务 ----
@@ -241,5 +253,7 @@ export type WsMessage =
   | { type: 'job.log'; jobId: string; line: string }
   | { type: 'job.progress'; jobId: string; progress: number; partsDone: number; partsTotal: number; phase: JobPhase }
   | { type: 'scan.finished'; watchpointId: string | null; found: number; queued: number }
+  | { type: 'watchpoint.scan'; watchpointId: string; path: string }
   | { type: 'settings.updated' }
   | { type: 'schedule.fired'; scheduleId: string; name: string }
+  | { type: 'ping'; serverTime: string }

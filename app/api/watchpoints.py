@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 
 from .. import config, db
 from ..models import ScanResult, WatchPoint, WatchPointCreate, WatchPointUpdate
-from ..services import scanner
+from ..services import scanner, scheduler
 from ..services.monitor import monitor as monitor_service
 from .system import ensure_allowed
 
@@ -27,9 +27,26 @@ def _find(watchpoints: list, wp_id: str) -> dict:
     raise HTTPException(status_code=404, detail="监控目录不存在")
 
 
+def _to_model(item: dict) -> WatchPoint:
+    """补上 nextScanAt —— 它不落盘，而是每次查询时按当前扫描计划算出来的。"""
+    return WatchPoint(**item, next_scan_at=scheduler.next_scan_time(item["id"]))
+
+
+def _apply(watchpoints: list) -> None:
+    """
+    保存监控目录并让后台重新装配。
+
+    两件事必须同时做：monitor 管实时监听那一路，scheduler 管定时扫描那一路，
+    少叫一个就会出现「界面上改了、后台还在按老规矩扫」。
+    """
+    config.save_watchpoints(watchpoints)
+    monitor_service.reload()
+    scheduler.reload_watchpoint_jobs()
+
+
 @router.get("", response_model=list[WatchPoint])
 def list_watchpoints() -> list:
-    return [WatchPoint(**wp) for wp in config.load_watchpoints()]
+    return [_to_model(wp) for wp in config.load_watchpoints()]
 
 
 @router.post("", response_model=WatchPoint)
@@ -46,16 +63,17 @@ def create_watchpoint(payload: WatchPointCreate) -> WatchPoint:
         "id": "wp_" + uuid.uuid4().hex[:8],
         "path": str(target),
         "recursive": bool(payload.recursive),
-        "enabled": True,
+        "scanMode": payload.scan_mode,
+        "scanIntervalHours": payload.scan_interval_hours,
+        "scanTime": payload.scan_time,
         "note": payload.note or "",
         "createdAt": db.now_iso(),
         "lastScanAt": None,
         "videoCount": 0,
     }
     watchpoints.append(item)
-    config.save_watchpoints(watchpoints)
-    monitor_service.reload()
-    return WatchPoint(**item)
+    _apply(watchpoints)
+    return _to_model(_find(config.load_watchpoints(), item["id"]))
 
 
 @router.put("/{wp_id}", response_model=WatchPoint)
@@ -65,14 +83,19 @@ def update_watchpoint(wp_id: str, payload: WatchPointUpdate) -> WatchPoint:
 
     if payload.recursive is not None:
         item["recursive"] = bool(payload.recursive)
-    if payload.enabled is not None:
-        item["enabled"] = bool(payload.enabled)
+    if payload.scan_mode is not None:
+        item["scanMode"] = payload.scan_mode
+    if payload.scan_interval_hours is not None:
+        item["scanIntervalHours"] = int(payload.scan_interval_hours)
+    if payload.scan_time is not None:
+        item["scanTime"] = payload.scan_time
     if payload.note is not None:
         item["note"] = payload.note
 
-    config.save_watchpoints(watchpoints)
-    monitor_service.reload()
-    return WatchPoint(**item)
+    _apply(watchpoints)
+    # 回读一次：保存时会顺手纠正非法值（比如填了个 7 小时），
+    # 把纠正后的结果返回给前端，界面显示的和真正生效的就永远一致
+    return _to_model(_find(config.load_watchpoints(), wp_id))
 
 
 @router.delete("/{wp_id}")
@@ -80,16 +103,18 @@ def delete_watchpoint(wp_id: str) -> dict:
     watchpoints = config.load_watchpoints()
     _find(watchpoints, wp_id)
     remaining = [wp for wp in watchpoints if wp.get("id") != wp_id]
-    config.save_watchpoints(remaining)
-    monitor_service.reload()
+    _apply(remaining)
     return {"ok": True, "message": "已移除该监控目录（不会删除磁盘上的任何文件）"}
 
 
 @router.post("/{wp_id}/scan", response_model=ScanResult)
 def scan_watchpoint(wp_id: str) -> ScanResult:
     """
-    立即扫描一次。注意：仍然会走文件稳定检测，正在拷贝的文件会被延后处理，
-    这不是卡住了，而是在保护你的数据。
+    立即扫描一次 —— 这是「手动分割」的入口，刻意不做任何 scanMode 判断：
+    哪怕这个目录设成「仅手动」，用户点它就该扫。
+
+    注意仍然会走文件稳定检测，正在拷贝的文件会被延后处理，这不是卡住了，
+    而是在保护你的数据。
     """
     watchpoints = config.load_watchpoints()
     item = _find(watchpoints, wp_id)

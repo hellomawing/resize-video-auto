@@ -31,6 +31,14 @@ LOCAL_TZ = datetime.now().astimezone().tzinfo
 _scheduler: BackgroundScheduler | None = None
 _lock = threading.Lock()
 
+# job id 前缀把两类任务分开，互不干扰：
+#   schedule:   用户在「定时任务」页面自己建的
+#   watchpoint: 监控目录上「扫描方式」自动派生的
+# 分开的好处是重排其中一类时不会误删另一类，用户也不会在定时任务列表里
+# 看见一堆系统生成的条目。
+SCHEDULE_PREFIX = "schedule:"
+WATCH_JOB_PREFIX = "watchpoint:"
+
 WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
 
@@ -157,12 +165,12 @@ def stop_scheduler() -> None:
 
 
 def reload_schedules() -> None:
-    """按 schedules.json 重新注册所有定时任务。"""
+    """按 schedules.json 重新注册所有定时任务，并顺带重排监控目录的扫描计划。"""
     if _scheduler is None:
         return
     with _lock:
         for job in _scheduler.get_jobs():
-            if job.id.startswith("schedule:"):
+            if job.id.startswith(SCHEDULE_PREFIX):
                 job.remove()
 
         for sc in config.load_schedules():
@@ -177,20 +185,68 @@ def reload_schedules() -> None:
                 _run_schedule, trigger=trigger, id="schedule:%s" % sc["id"],
                 args=[sc["id"]], replace_existing=True)
         _log("已注册 %d 个定时任务" % len([j for j in _scheduler.get_jobs()
-                                          if j.id.startswith("schedule:")]))
+                                          if j.id.startswith(SCHEDULE_PREFIX)]))
+    # 注意在 _lock 之外调用：_lock 是不可重入的普通 Lock，嵌套会直接死锁
+    reload_watchpoint_jobs()
 
 
-def next_run_time(schedule_id: str):
-    """取某个定时任务的下次执行时间（ISO 字符串）；未启用或取不到返回 None。"""
+def reload_watchpoint_jobs() -> None:
+    """
+    按每个监控目录的「扫描方式」注册或撤销它的自动扫描任务。
+
+    只有 interval / daily 两种模式会产生 job（realtime 靠 monitor 的监听 + 轮询，
+    manual 本来就什么都不做）。改完扫描方式后必须调一次这个函数，否则计划不会生效。
+    """
+    if _scheduler is None:
+        return
+    with _lock:
+        for job in _scheduler.get_jobs():
+            if job.id.startswith(WATCH_JOB_PREFIX):
+                job.remove()
+
+        count = 0
+        for wp in config.load_watchpoints():
+            expr = config.scan_cron(wp)
+            if not expr:
+                continue
+            try:
+                trigger = CronTrigger.from_crontab(expr, timezone=LOCAL_TZ)
+            except Exception as exc:                  # noqa: BLE001
+                _log("监控目录 %s 的扫描计划无效，已跳过：%s" % (wp.get("path"), exc))
+                continue
+            _scheduler.add_job(
+                _run_watchpoint_scan, trigger=trigger,
+                id=WATCH_JOB_PREFIX + wp["id"], args=[wp["id"]],
+                replace_existing=True)
+            count += 1
+        _log("已注册 %d 个监控目录的定时扫描" % count)
+
+
+def _next_run(job_id: str):
     if _scheduler is None:
         return None
-    job = _scheduler.get_job("schedule:%s" % schedule_id)
+    job = _scheduler.get_job(job_id)
     if job is None or job.next_run_time is None:
         return None
     try:
         return job.next_run_time.astimezone(LOCAL_TZ).isoformat(timespec="seconds")
-    except Exception:
+    except Exception:                                 # noqa: BLE001
         return None
+
+
+def next_run_time(schedule_id: str):
+    """取某个定时任务的下次执行时间（ISO 字符串）；未启用或取不到返回 None。"""
+    return _next_run(SCHEDULE_PREFIX + schedule_id)
+
+
+def next_scan_time(watchpoint_id: str):
+    """
+    取监控目录的下次自动扫描时间。
+
+    实时监听模式的「下次」就是「随时」，仅手动模式没有下次，两者都返回 None，
+    由前端按 scanMode 自己决定显示什么文案。
+    """
+    return _next_run(WATCH_JOB_PREFIX + watchpoint_id)
 
 
 # ---------------------------------------------------------------- 执行
@@ -230,3 +286,34 @@ def run_now(schedule_id: str) -> tuple:
     threading.Thread(target=_run_schedule, args=[schedule_id],
                      name="schedule-manual", daemon=True).start()
     return True, "已开始执行"
+
+
+def _run_watchpoint_scan(watchpoint_id: str) -> None:
+    """某个监控目录的定时扫描到点了。"""
+    wp = next((w for w in config.load_watchpoints()
+               if w.get("id") == watchpoint_id), None)
+    if wp is None:
+        return
+    # 界面上刚把扫描方式改成「仅手动 / 实时」时，旧 job 可能还会响一次；
+    # 这里再确认一遍模式，避免用户刚关掉定时扫描就被多扫一回。
+    if wp.get("scanMode") not in ("interval", "daily"):
+        return
+
+    path = wp.get("path")
+    _log("触发监控目录定时扫描：%s" % path)
+    bus.publish({"type": "watchpoint.scan", "watchpointId": watchpoint_id,
+                 "path": path})
+    try:
+        result = scanner.scan_watchpoint(wp, trigger="watch")
+        _log("监控目录 %s 定时扫描完成：%s" % (path, result.get("message")))
+        if result.get("queued") or result.get("waiting"):
+            bus.publish({
+                "type": "scan.finished",
+                "watchpointId": watchpoint_id,
+                "found": result.get("found", 0),
+                "queued": result.get("queued", 0),
+                "waiting": result.get("waiting", 0),
+                "message": result.get("message", ""),
+            })
+    except Exception as exc:                          # noqa: BLE001
+        _log("监控目录 %s 定时扫描出错：%s" % (path, exc))

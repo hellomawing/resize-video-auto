@@ -116,26 +116,40 @@ class Settings(CamelModel):
 
 # ---------------------------------------------------------------- 监控目录
 
+# 扫描方式：realtime 实时监听 | interval 每隔 N 小时 | daily 每天 HH:MM | manual 仅手动
+# 取值与 app/config.py 的 SCAN_MODES 必须一致，改这里要同步改那边。
+ScanMode = Literal["realtime", "interval", "daily", "manual"]
+
+
 class WatchPoint(CamelModel):
     id: str
     path: str
     recursive: bool = True
-    enabled: bool = True
+    scan_mode: ScanMode = "realtime"
+    scan_interval_hours: int = 6
+    scan_time: str = "03:00"
     note: str = ""
     created_at: str = ""
     last_scan_at: Optional[str] = None
+    # 下次自动扫描时间；实时监听与仅手动没有「下次」，返回 None
+    next_scan_at: Optional[str] = None
     video_count: int = 0
 
 
 class WatchPointCreate(CamelModel):
     path: str
     recursive: bool = True
+    scan_mode: ScanMode = "realtime"
+    scan_interval_hours: int = 6
+    scan_time: str = "03:00"
     note: str = ""
 
 
 class WatchPointUpdate(CamelModel):
     recursive: Optional[bool] = None
-    enabled: Optional[bool] = None
+    scan_mode: Optional[ScanMode] = None
+    scan_interval_hours: Optional[int] = None
+    scan_time: Optional[str] = None
     note: Optional[str] = None
 
 
