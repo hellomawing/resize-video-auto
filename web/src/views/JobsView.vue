@@ -43,7 +43,6 @@ const clearConfirm = ref(false)
 const TRIGGER_LABEL: Record<Job['trigger'], string> = {
   watch: '监控',
   manual: '手动',
-  schedule: '定时',
   retry: '重试',
 }
 const PHASE_LABEL: Record<Job['phase'], string> = {
@@ -227,7 +226,7 @@ const columns = [
       <EmptyState
         v-else-if="rows.length === 0"
         text="没有符合条件的任务"
-        hint="调整筛选条件，或到「监控目录」「定时任务」触发新的切分"
+        hint="调整筛选条件，或到「监控目录」触发新的切分"
       />
       <DataTable v-else :columns="columns">
         <tr v-for="job in rows" :key="job.id" class="is-clickable" @click="openDetail(job)">

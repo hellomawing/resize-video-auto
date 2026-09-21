@@ -28,7 +28,6 @@ export interface JobStats {
 export interface Stats {
   jobs: JobStats
   watchpoints: number
-  schedules: number
   todayBytes: number
   totalParts: number
 }
@@ -179,29 +178,10 @@ export interface ScanResult {
   message: string
 }
 
-// ---- 定时任务 ----
-export interface Schedule {
-  id: string
-  name: string
-  cron: string
-  enabled: boolean
-  watchpointIds: string[]
-  lastRunAt: string | null
-  nextRunAt: string | null
-  cronText: string
-}
-
-export interface ScheduleCreate {
-  name: string
-  cron: string
-  enabled: boolean
-  watchpointIds: string[]
-}
-
 // ---- 任务 ----
 export type JobStatus = 'queued' | 'running' | 'success' | 'failed' | 'canceled' | 'skipped'
 export type JobPhase = 'waiting' | 'probe' | 'splitting' | 'verifying' | 'marking' | 'done'
-export type JobTrigger = 'watch' | 'manual' | 'schedule' | 'retry'
+export type JobTrigger = 'watch' | 'manual' | 'retry'
 
 export interface ProducedFile {
   name: string
@@ -336,5 +316,4 @@ export type WsMessage =
   | { type: 'scan.finished'; watchpointId: string | null; found: number; queued: number }
   | { type: 'watchpoint.scan'; watchpointId: string; path: string }
   | { type: 'settings.updated' }
-  | { type: 'schedule.fired'; scheduleId: string; name: string }
   | { type: 'ping'; serverTime: string }

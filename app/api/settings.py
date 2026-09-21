@@ -28,11 +28,11 @@ def write_settings(payload: Settings) -> Settings:
     """
     保存设置后要立刻让改动生效：
       * 监控服务重新装配（允许根目录、实时监听开关可能变了）
-      * 定时任务重新注册（虽然定时任务不依赖设置，但保持一致）
+      * 监控目录的扫描计划重排（时区可能变了，cron 的触发时刻跟着变）
     目录白名单改了之后，正在监听的目录如果不再合法，也应该被摘掉。
     """
     saved = config.save_settings(payload.model_dump(by_alias=True))
     monitor_service.reload()
-    scheduler.reload_schedules()
+    scheduler.reload_watchpoint_jobs()
     bus.publish({"type": "settings.updated"})
     return Settings(**saved)

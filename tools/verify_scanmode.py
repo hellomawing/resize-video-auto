@@ -77,11 +77,7 @@ check("时间 9:5 -> 补零", config.normalize_watchpoint(
 check("未知 scanMode -> realtime", config.normalize_watchpoint(
     {"scanMode": "whatever"})["scanMode"], "realtime")
 
-print("== 4. cron 中文描述（前端展示用） ==")
-check("每 6 小时", scheduler.describe_cron("0 */6 * * *"), "每 6 小时（第 0 分）")
-check("每天 03:00", scheduler.describe_cron("0 3 * * *"), "每天 03:00")
-
-print("== 5. 定时计划真的注册进 APScheduler ==")
+print("== 4. 定时计划真的注册进 APScheduler ==")
 config.save_watchpoints([
     {"id": "wp_rt", "path": "/vol1/rt", "scanMode": "realtime",
      "recursive": True, "note": "", "createdAt": "", "lastScanAt": None, "videoCount": 0},
@@ -103,7 +99,7 @@ check("每天定时有下次时间", bool(scheduler.next_scan_time("wp_dy")), Tr
 print("     wp_iv 下次：%s" % scheduler.next_scan_time("wp_iv"))
 print("     wp_dy 下次：%s" % scheduler.next_scan_time("wp_dy"))
 
-print("== 6. 改扫描方式后计划要跟着变 ==")
+print("== 5. 改扫描方式后计划要跟着变 ==")
 items = config.load_watchpoints()
 for it in items:
     if it["id"] == "wp_iv":
@@ -117,18 +113,6 @@ jobs = sorted(j.id for j in scheduler._scheduler.get_jobs())
 check("重新装配后的 job", jobs, ["watchpoint:wp_dy", "watchpoint:wp_mn"])
 check("原 interval 目录已撤销", scheduler.next_scan_time("wp_iv"), None)
 check("新改的 daily 目录已排上", bool(scheduler.next_scan_time("wp_mn")), True)
-
-print("== 7. 定时任务与目录扫描互不干扰 ==")
-config.save_schedules([{"id": "sc_x", "name": "每周一全量", "cron": "0 9 * * 1",
-                        "enabled": True, "watchpointIds": [],
-                        "lastRunAt": None}])
-scheduler.reload_schedules()
-jobs = sorted(j.id for j in scheduler._scheduler.get_jobs())
-check("两类 job 并存", jobs, ["schedule:sc_x", "watchpoint:wp_dy", "watchpoint:wp_mn"])
-scheduler.reload_watchpoint_jobs()
-jobs = sorted(j.id for j in scheduler._scheduler.get_jobs())
-check("重排目录计划不会误删定时任务", jobs,
-      ["schedule:sc_x", "watchpoint:wp_dy", "watchpoint:wp_mn"])
 scheduler.stop_scheduler()
 
 print("\n通过 %d 项，失败 %d 项" % (ok, len(bad)))

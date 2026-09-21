@@ -326,39 +326,6 @@
 
 ---
 
-## 5. 定时任务
-
-```json
-{
-  "id": "sc_ef56ab78",
-  "name": "每天凌晨 3 点",
-  "cron": "0 3 * * *",
-  "enabled": true,
-  "watchpointIds": [],
-  "lastRunAt": null,
-  "nextRunAt": "2026-09-21T03:00:00+08:00",
-  "cronText": "每天 03:00"
-}
-```
-- `cron` 为**标准 5 段** cron 表达式（分 时 日 月 周）。
-- `watchpointIds` 为空数组 = 扫描全部监控目录。
-- `cronText` 由后端生成的中文可读描述，前端直接展示。
-
-> 和监控目录「扫描方式」的分工：**扫描方式**决定每个目录平时的节奏
-> （实时 / 每隔 N 小时 / 每天 / 仅手动）；**定时任务**是额外的补充扫描，
-> 适合「目录设成仅手动，但每周一还要全量扫一次」这类需求。两者互不覆盖，
-> 触发时都只是「扫一遍」，不会互相取消。
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/schedules` | 列表 |
-| POST | `/api/schedules` | body `{name, cron, enabled, watchpointIds}` |
-| PUT | `/api/schedules/{id}` | 局部更新 |
-| DELETE | `/api/schedules/{id}` | 删除 |
-| POST | `/api/schedules/{id}/run` | 立即执行一次 |
-
----
-
 ## 5. 任务
 
 ```json
@@ -490,7 +457,7 @@ body：
 
 ## 8. 前端约定
 
-- 路由：`/`（概览）、`/watch`（监控目录）、`/schedule`（定时任务）、`/jobs`（任务队列）、`/settings`（设置）、`/undo`（撤销）。
+- 路由：`/`（概览）、`/watch`（监控目录）、`/jobs`（任务队列）、`/settings`（设置）、`/undo`（撤销）。
 - 左侧固定导航栏 + 右侧内容区；整体浅色主题，主色 `#185FA5`。
 - 所有列表为空时给出明确的空状态提示文案。
 - 时间统一显示为 `YYYY-MM-DD HH:mm:ss` 本地时间；体积显示为 `6.00 GB` 这种可读格式。

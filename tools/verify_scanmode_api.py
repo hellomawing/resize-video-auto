@@ -113,10 +113,7 @@ with TestClient(app) as client:
     r = client.put("/api/watchpoints/%s" % iv_id, json={"scanMode": "nonsense"})
     check("非法 scanMode 被拒", r.status_code, 422)
 
-    print("== 8. 定时任务列表不受目录扫描计划污染 ==")
-    check("定时任务为空", client.get("/api/schedules").json(), [])
-
-    print("== 9. 归档检查：磁盘上的 watchpoints.json ==")
+    print("== 8. 归档检查：磁盘上的 watchpoints.json ==")
     raw = json.loads((DATA / "watchpoints.json").read_text(encoding="utf-8"))
     check("存储里没有 enabled", any("enabled" in it for it in raw), False)
     check("存储里有 scanMode", all("scanMode" in it for it in raw), True)

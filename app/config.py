@@ -5,8 +5,7 @@ app/config.py —— 配置与数据文件的位置、读写
 
 所有持久化都放在同一个数据目录里（容器里是 /data，本地开发是 <项目根>/data）：
     settings.json     切分/监控/服务参数
-    watchpoints.json  监控目录列表
-    schedules.json    定时任务列表
+    watchpoints.json  监控目录列表（含各自的扫描方式）
     video-splitter.db SQLite：任务与日志
     archive-dirs.json 用过的归档子目录名（只增不减，见 collect_archive_dirs）
 
@@ -33,7 +32,6 @@ DATA_DIR = Path(
 
 SETTINGS_PATH = DATA_DIR / "settings.json"
 WATCHPOINTS_PATH = DATA_DIR / "watchpoints.json"
-SCHEDULES_PATH = DATA_DIR / "schedules.json"
 DB_PATH = DATA_DIR / "video-splitter.db"
 # 「用过的归档子目录名」的记录，见 collect_archive_dirs
 ARCHIVE_DIRS_PATH = DATA_DIR / "archive-dirs.json"
@@ -228,7 +226,7 @@ def _normalize_settings(s: dict) -> dict:
     return s
 
 
-# ---------------------------------------------------------------- 监控目录 / 定时任务
+# ---------------------------------------------------------------- 监控目录
 
 # 监控目录的「扫描方式」。这一个字段同时回答两件事：要不要自动扫、多久扫一次。
 # 之所以不用「启用 + 自动扫描」两个开关，是因为两个开关会组合出「启用了但不自动扫」
@@ -317,7 +315,7 @@ def is_auto_scan(wp: dict) -> bool:
 def scan_cron(wp: dict) -> str | None:
     """
     把扫描方式翻译成 5 段 cron；不需要定时扫描的返回 None。
-    放在 config 这一层是为了让 scheduler（排schedule用）和 API（展示下次时间用）
+    放在 config 这一层是为了让 scheduler（排计划用）和 API（展示下次时间用）
     共用同一份规则，不会出现「显示的时间和实际执行的时间不一致」。
     """
     mode = wp.get("scanMode")
@@ -341,17 +339,6 @@ def save_watchpoints(items: list) -> None:
     with _lock:
         _atomic_write(WATCHPOINTS_PATH,
                       [normalize_watchpoint(item) for item in (items or [])])
-
-
-def load_schedules() -> list:
-    with _lock:
-        data = _read_json(SCHEDULES_PATH, [])
-        return data if isinstance(data, list) else []
-
-
-def save_schedules(items: list) -> None:
-    with _lock:
-        _atomic_write(SCHEDULES_PATH, items)
 
 
 # ---------------------------------------------------------------- 原片处理策略

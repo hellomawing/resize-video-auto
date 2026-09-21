@@ -205,10 +205,10 @@ const recentColumns = [
           :hint="`累计切片 ${stats?.totalParts ?? 0} 段`"
         />
         <StatCard
-          title="监控 / 定时"
-          :value="`${stats?.watchpoints ?? 0} / ${stats?.schedules ?? 0}`"
+          title="监控目录"
+          :value="stats?.watchpoints ?? 0"
           accent="muted"
-          hint="监控目录 / 定时任务"
+          hint="正在自动发现的目录数"
         />
       </div>
 
@@ -218,7 +218,7 @@ const recentColumns = [
           <span>最近 10 条任务</span>
           <button class="btn btn--sm btn--ghost" @click="router.push('/jobs')">查看全部 →</button>
         </div>
-        <EmptyState v-if="recent.length === 0" text="暂无任务记录" hint="扫描监控目录或等待定时任务触发后将在此显示" />
+        <EmptyState v-if="recent.length === 0" text="暂无任务记录" hint="扫描监控目录后，处理过的文件会显示在这里" />
         <DataTable v-else :columns="recentColumns">
           <tr
             v-for="job in recent"

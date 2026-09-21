@@ -45,7 +45,6 @@ def stats() -> StatsOut:
     return StatsOut(
         jobs=summary["jobs"],
         watchpoints=len(config.load_watchpoints()),
-        schedules=len(config.load_schedules()),
         today_bytes=summary["todayBytes"],
         total_bytes=summary["totalBytes"],
         total_parts=summary["totalParts"],

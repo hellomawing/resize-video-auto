@@ -194,7 +194,7 @@ def insert_job(job: dict) -> bool:
     """
     插入任务。如果同一条源文件已经有排队中/运行中的任务，返回 False。
     靠 idx_jobs_active_src 这个部分唯一索引兜底，比先查后插更可靠
-    （监控和定时任务可能同时触发同一个文件）。
+    （监控和手动扫描可能同时触发同一个文件）。
     """
     cols = ", ".join(JOB_COLUMNS)
     marks = ", ".join("?" for _ in JOB_COLUMNS)

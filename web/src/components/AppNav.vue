@@ -8,7 +8,6 @@ const ws = useWebSocket()
 const links = [
   { to: '/', label: '概览', icon: '◎' },
   { to: '/watch', label: '监控目录', icon: '📁' },
-  { to: '/schedule', label: '定时任务', icon: '⏰' },
   { to: '/jobs', label: '任务队列', icon: '📋' },
   { to: '/settings', label: '设置', icon: '⚙' },
   { to: '/undo', label: '撤销分割', icon: '↩' },

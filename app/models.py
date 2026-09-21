@@ -54,7 +54,6 @@ class JobCounts(CamelModel):
 class StatsOut(CamelModel):
     jobs: JobCounts
     watchpoints: int = 0
-    schedules: int = 0
     today_bytes: int = 0
     total_bytes: int = 0
     total_parts: int = 0
@@ -227,33 +226,6 @@ class ScanIn(CamelModel):
     """
     mark_source: Optional[MarkSource] = None
     source_dir: Optional[str] = None
-
-
-# ---------------------------------------------------------------- 定时任务
-
-class Schedule(CamelModel):
-    id: str
-    name: str
-    cron: str
-    enabled: bool = True
-    watchpoint_ids: list[str] = Field(default_factory=list)
-    last_run_at: Optional[str] = None
-    next_run_at: Optional[str] = None
-    cron_text: str = ""
-
-
-class ScheduleCreate(CamelModel):
-    name: str
-    cron: str
-    enabled: bool = True
-    watchpoint_ids: list[str] = Field(default_factory=list)
-
-
-class ScheduleUpdate(CamelModel):
-    name: Optional[str] = None
-    cron: Optional[str] = None
-    enabled: Optional[bool] = None
-    watchpoint_ids: Optional[list[str]] = None
 
 
 # ---------------------------------------------------------------- 撤销

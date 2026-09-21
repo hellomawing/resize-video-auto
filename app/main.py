@@ -6,7 +6,7 @@ app/main.py —— FastAPI 入口
 启动时拉起三样东西，它们都是后台线程，互不阻塞：
     runner    任务执行器（单并发 worker）
     monitor   目录监控（实时监听 + 轮询兜底）
-    scheduler 定时任务
+    scheduler 定时扫描（监控目录的「每隔 N 小时 / 每天 HH:MM」计划）
 
 前端构建产物（web/dist）由本进程直接托管，所以整个服务只有一个端口、
 一个容器，不需要额外的 nginx。前端没构建时也不报错，只给一句提示，
