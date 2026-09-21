@@ -168,6 +168,38 @@ with TestClient(app) as client:
     has("error 提示没挂载进来", data["error"], "挂载")
     check("shortcuts 为空（全在白名单外）", data["shortcuts"], [])
 
+    print("== 7. 不可枚举根的自动探测（suggestedRoots）==")
+    from app.api.system import _probe_enumerable_children
+    UID = MEDIA / "1000"          # 模拟 fnOS 的 /vol1/1000
+    (UID / "video").mkdir(parents=True, exist_ok=True)
+    (MEDIA / "hello").mkdir(exist_ok=True)   # 非数字名：不该被探测出来
+
+    hits = _probe_enumerable_children(MEDIA)
+    check("数字子目录被探测到", hits, [str(UID)])
+
+    # 模拟 /vol1：对根的 readdir 被拒，但下面的路径一切正常
+    real_scandir = os.scandir
+    def fake_scandir(path):
+        if Path(path) == MEDIA:
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path)
+
+    save_roots([MEDIA])
+    with mock.patch("app.api.system.os.scandir", side_effect=fake_scandir):
+        data = client.get("/api/browse").json()
+        check("打开选择器第一眼就带探测结果",
+              data["suggestedRoots"], [str(UID)])
+        check("根本身没有 error（探测是静默的锦上添花）", data["error"], None)
+
+        data = client.get("/api/browse", params={"path": str(MEDIA)}).json()
+        check("点根进不去时也带探测结果",
+              data["suggestedRoots"], [str(UID)])
+        has("error 说明探测到了出路", data["error"], "点一下即可继续")
+        has("error 仍提示白名单兜底", data["error"], "可访问根目录白名单")
+
+    data = client.get("/api/browse", params={"path": str(INBOX)}).json()
+    check("可正常枚举的目录没有多余建议", data["suggestedRoots"], [])
+
 print()
 if bad:
     print("失败 %d 项 / 通过 %d 项：" % (len(bad), ok))

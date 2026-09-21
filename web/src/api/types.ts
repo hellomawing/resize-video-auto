@@ -55,6 +55,8 @@ export interface BrowseResult {
   missingRoots: string[]
   dirs: BrowseEntry[]
   shortcuts: DirShortcut[]
+  // 根目录不可枚举（fnOS 的 /vol1）时自动探测到的可直接进入的层，如 /vol1/1000
+  suggestedRoots: string[]
   videoCount: number
   error: string | null
 }

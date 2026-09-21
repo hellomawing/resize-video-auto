@@ -88,6 +88,9 @@ class BrowseOut(CamelModel):
     missing_roots: list[str] = Field(default_factory=list)
     dirs: list[DirItem] = Field(default_factory=list)
     shortcuts: list[DirShortcut] = Field(default_factory=list)
+    # 根目录不可枚举时（fnOS 的 /vol1）自动探测到的、**可直接进入**的子目录，
+    # 如 /vol1/1000 —— 前端把它们摆成「点一下直达」的入口，用户不必去改白名单。
+    suggested_roots: list[str] = Field(default_factory=list)
     video_count: int = 0
     error: Optional[str] = None
 

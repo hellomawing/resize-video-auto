@@ -64,6 +64,48 @@ def _allowed_roots() -> list:
     return roots
 
 
+def _probe_enumerable_children(root: Path, limit: int = 8) -> list:
+    """
+    根目录不可枚举时，探测它下面有哪些「存在且能正常列出」的子目录。
+
+    为什么只试数字名：fnOS 的存储空间布局是 /volX/<uid>（实测 /vol1/1000），
+    uid 是数字且常见在 0~2999；@ 开头的是系统目录（@appdata…），不该引导用户进去。
+    readdir 被拒只挡「列出 /vol1 有什么」，不挡「按名字直接走到 /vol1/1000」——
+    这是内核权限模型的基本行为（x 与 r 是两回事），所以 stat 探测是可行的。
+    """
+    found = []
+    try:
+        for n in range(0, 3000):
+            if len(found) >= limit:
+                break
+            child = root / str(n)
+            try:
+                if not child.is_dir():
+                    continue
+                # 能 stat 不代表能 readdir，再试一把列出
+                with os.scandir(child) as it:
+                    next(it, None)
+            except PermissionError:
+                continue
+            except OSError:
+                continue
+            found.append(str(child))
+    except OSError:
+        return found
+    return found
+
+
+def _scandir_error(target: Path) -> list:
+    """尝试列出 target；被拒时返回探测到的可直达子目录，能列则返回空表。"""
+    try:
+        with os.scandir(target):
+            return []
+    except PermissionError:
+        return _probe_enumerable_children(target)
+    except OSError:
+        return []
+
+
 def _within(path: Path, roots) -> bool:
     """路径是否落在某个白名单根目录之内（含根本身）。"""
     for root in roots:
@@ -158,9 +200,17 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
             error = ("配置的可访问根目录都不存在：%s。"
                      "容器里请确认这些路径已经挂载进来"
                      % "、".join(str(r) for r in roots))
+        # 打开选择器的第一眼就探一遍：某个根不可枚举（fnOS 的 /vol1）时，
+        # 直接把能进的层摆出来，省得用户点了根、看完一大段报错才知道有出路
+        suggestions = []
+        for r in live_roots:
+            for hit in _scandir_error(Path(r)):
+                if hit not in suggestions:
+                    suggestions.append(hit)
         return BrowseOut(path="", parent=None, roots=root_texts,
                          missing_roots=missing_roots, dirs=dirs,
-                         shortcuts=shortcuts, video_count=0, error=error)
+                         shortcuts=shortcuts, suggested_roots=suggestions,
+                         video_count=0, error=error)
 
     target = ensure_allowed(Path(path), roots)
 
@@ -172,7 +222,7 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
                                "（确认路径拼写、以及它是否已挂载进容器）")
 
     exts = set(engine.normalize_exts(settings["split"].get("ext")))
-    dirs, videos, error = [], 0, None
+    dirs, videos, error, suggestions = [], 0, None, []
     try:
         with os.scandir(target) as it:
             for entry in it:
@@ -190,13 +240,14 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
         # 没有扩展 ACL，readdir 直接 EACCES，但**访问它下面的目录完全正常**。
         # 所以别说一句「没有权限」就完事，得给出路 —— 否则用户会以为
         # 是自己配置错了，或者以为整块盘都读不了。
-        error = ("没有权限列出该目录的子目录。请注意：这并不代表它下面的目录不可用"
-                 " —— 像 fnOS 就把存储池根目录（/vol1）故意设成不可枚举，"
-                 "但直接访问它下面的路径（如 /vol1/1000/…）完全正常。"
-                 "请用上方的「常用目录」直达已知目录（已添加的监控目录、"
-                 "最近任务目录、系统输出目录都在里面）；"
-                 "要添加一个全新的目录，请先到「设置 → 可访问根目录白名单」"
-                 "把根改到可枚举的层，例如 /vol1/1000。")
+        suggestions = _probe_enumerable_children(target)
+        error = ("没有权限列出该目录的子目录 —— fnOS 这类系统把存储池根目录"
+                 "（/vol1）故意设成不可枚举，这不代表下面的目录不可用。"
+                 + ("下面已列出探测到的「可直接进入」目录，点一下即可继续；"
+                    if suggestions else
+                    "请用上方的「常用目录」直达已知目录，或")
+                 + "到「设置 → 可访问根目录白名单」把根改到可枚举的层"
+                   "（如 /vol1/1000）。")
     except OSError as exc:
         error = "读取目录失败：%s" % exc
 
@@ -205,7 +256,8 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
     parent = str(target.parent) if target.parent != target else None
     return BrowseOut(path=str(target), parent=parent, roots=root_texts,
                      missing_roots=missing_roots, dirs=dirs,
-                     shortcuts=shortcuts, video_count=videos, error=error)
+                     shortcuts=shortcuts, suggested_roots=suggestions,
+                     video_count=videos, error=error)
 
 
 @router.get("/env")

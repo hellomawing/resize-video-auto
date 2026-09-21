@@ -13,6 +13,8 @@ import type { BrowseResult, DirShortcut } from '../api/types'
 // 连一条扩展 ACL 都没有，内核拒绝对它 readdir —— 于是**从根往下点的第一级就是死的**，
 // 用户会看到「没有权限」并且再也走不动（但直接访问 /vol1/1000/… 完全正常）。
 // 所以给一条绕过它的路：点「常用目录」里的已添加监控目录 / 最近任务目录直达。
+// 后端还会自动探测不可枚举根下面能进的层（如 /vol1/1000），以「可直接进入的目录」
+// 摆出来 —— 这条路不需要用户改任何配置，是全新目录的第一入口。
 // 这也是本弹窗**不提供手动输入路径**的原因 —— 路径入口只保留「下拉 + 逐级点」一种，
 // 不再让人有机会敲进一条走不通的路径。
 const props = defineProps<{
@@ -30,6 +32,7 @@ const roots = ref<string[]>([])
 const missingRoots = ref<string[]>([])
 const dirs = ref<BrowseResult['dirs']>([])
 const shortcuts = ref<DirShortcut[]>([])
+const suggestedRoots = ref<string[]>([])
 const parent = ref('')
 const error = ref<string | null>(null)
 const loading = ref(false)
@@ -49,6 +52,7 @@ async function load(path: string): Promise<void> {
     missingRoots.value = res.missingRoots || []
     dirs.value = res.dirs
     shortcuts.value = res.shortcuts || []
+    suggestedRoots.value = res.suggestedRoots || []
     parent.value = res.parent ?? ''
     current.value = res.path
     if (res.error) error.value = res.error
@@ -102,6 +106,22 @@ function cancel(): void {
       <div v-if="missingRoots.length" class="picker-hint">
         配置的可访问根目录里有 {{ missingRoots.length }} 个不存在：{{ missingRoots.join('、') }}
         —— 容器里可能没把它们挂载进来，所以没放进上面的下拉框。
+      </div>
+
+      <div v-if="suggestedRoots.length" class="picker-sect">
+        <div class="picker-sect-title">可直接进入的目录（点一下直达）</div>
+        <div class="picker-chips">
+          <button
+            v-for="p in suggestedRoots"
+            :key="p"
+            class="chip"
+            :title="p"
+            @click="chooseDir(p)"
+          >
+            <span class="chip-kind">直达</span>
+            <span class="text-ellipsis">{{ p }}</span>
+          </button>
+        </div>
       </div>
 
       <div v-if="shortcuts.length" class="picker-sect">
