@@ -185,6 +185,8 @@ def main() -> int:
                               delete_slices=False, restore=False,
                               restore_origin_only=True, trash=False, ffprobe=None)
         check("恢复了 1 个", rep["restoredOrphans"], 1)
+        check("详情里不留空记录（正常组不该出现 noop）",
+              [d for d in rep["details"] if not d["message"]], [])
         check_true("文件已改名回原名", (tmp / "B.MP4").exists())
         check_true("带标记的那个已经不在了", not (tmp / "B#origin.MP4").exists())
         check("恢复后目录里两个待处理文件",

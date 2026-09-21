@@ -416,6 +416,12 @@ def apply_undo(folder: Path, *, recursive: bool = True, source_dir: str = "origi
                                            % "、".join(failed)})
                 continue
 
+        if not delete_slices and not restore:
+            # 两个动作都没勾时（典型场景：只恢复孤原片），正常的组不该留下一条
+            # action=noop、message 为空的记录 —— 那会甩给用户一条与他无关、
+            # 又什么都没做的条目
+            continue
+
         action = "deleted" if delete_slices else ""
         msg = []
         if delete_slices:
