@@ -150,6 +150,38 @@ docker build -f docker/Dockerfile -t video-splitter:1.0.0 .
 > 判断方法：`docker run --rm --entrypoint sh 镜像名 -c 'ls -la /opt/video-splitter/app'`，
 > 看到 `----------` 就是中招了。
 
+### 1-C. 以后更新版本：一条命令
+
+上面那串手工步骤已经固化成了脚本，改完代码重新部署只要跑它：
+
+```bash
+export NAS_HOST=192.168.5.188 NAS_PORT=7788 NAS_USER=admin NAS_PASS='<密码>'
+python tools/deploy_nas.py
+```
+
+它会：打源码包 → 上传 → **先删旧源码再解包** → 检查有没有正在跑的任务 →
+构建 → `--force-recreate` 重建容器 → 等健康检查通过。
+
+> 为什么要「先删再解包」：直接覆盖的话，你本地删掉的文件会永远留在 NAS 上，
+> 而且照样被 `COPY` 进镜像，症状是「改了却没生效」，极难查。
+
+| 参数 | 用途 |
+|---|---|
+| `--skip-build` | 只重建容器，不重新构建镜像（改了 `deploy/` 时才这么用） |
+| `--wait 300` | 有任务在跑时最多等 300 秒。**重建会掐断跑着的任务** |
+| `--force` | 不管有没有任务在跑，直接重建 |
+| `--dry-run` | 只打包并打印将要执行的命令，不连 NAS |
+| `--remote DIR` | 部署根目录，默认 `/vol1/1000/video-splitter` |
+| `--port N` | 容器端口，默认 `8099`（用于查任务和健康检查） |
+
+首次全新构建约 19 分钟（几乎全耗在 Debian 装 ffmpeg 的依赖链上），之后只改应用层
+代码时 apt / pip / 前端依赖全部命中缓存，**1~3 分钟**就完事——别按 19 分钟预估而不敢动。
+
+> `deploy/` **不在源码包里**，所以 NAS 上的 `src/deploy/.env` 不会被覆盖，脚本也不会
+> 删它。里面的 `PGID` 经常和 `PUID` 不一样（实测这台飞牛是 `1000:1001`）。
+>
+> 密码只走环境变量，不进任何文件——所以每开一个新的终端都要重新 `export` 一次。
+
 ### 2. 在 NAS 上部署
 
 把 `deploy/` 整个目录拷到 NAS，然后：
@@ -429,6 +461,13 @@ appcenter-cli manual-install enable
 所以搬过去的原片也不会被重切——但代价是**归档目录里的文件不会再被扫描**，
 别把想处理的视频放进去。
 
+排除是**按位置判断的**：只有落在本次扫描范围**之内**、且路径上某一层目录名撞上的
+文件才算归档。所以归档目录取成 `1000`、`vol1` 这类「路径上本来就有的段名」也不会
+误伤——早期版本比的是绝对路径的每一段，归档目录一旦叫 `1000`，监控目录下的文件
+会**全部**被判成「位于原片归档目录」，表现就是扫描永远发现 0 个视频，而给的理由
+看着还挺合理，极难联想到是名字撞的。唯一的例外是取成**监控目录自己的名字**：
+那整个扫描范围确实都在它「里面」。
+
 顺带一提，早期版本的归档目录叫 `origin`。升级后配置里的这个名字会被**自动迁到
 新默认名**，而 `origin` 目录本身仍会被扫描器排除，所以老数据不用手动搬。
 
@@ -627,10 +666,19 @@ python tools/smoke_test.py
 改动核心逻辑时，这些脚本在临时目录里造场景、不碰项目数据，跑得比冒烟测试快得多：
 
 ```bash
-python tools/verify_mark_policy.py      # 原片处理方式的三级设置与快照语义
+python tools/verify_mark_policy.py      # 原片处理方式的三级设置、快照语义、归档目录范围
 python tools/verify_workdir.py          # 临时工作目录与输出目录同文件系统
 python tools/verify_ignored_origin.py   # 「已处理文件如实报告」与孤儿原片恢复
 python tools/verify_scanmode.py         # 扫描方式与定时任务的重排
+```
+
+### 部署到 NAS
+
+```bash
+export NAS_HOST=... NAS_PORT=7788 NAS_USER=admin NAS_PASS='...'
+python tools/deploy_nas.py            # 更新部署，见「1-C」
+python tools/ssh_run.py exec 'uname -a'   # 单条命令 / put / get / detach
+python tools/nas_verify.py            # 部署后对接口做一轮验证
 ```
 
 ### 重新生成图标

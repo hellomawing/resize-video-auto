@@ -1054,6 +1054,33 @@ def is_internal_temp(path) -> bool:
         return False
 
 
+def is_in_archive_dir(path, base, names) -> bool:
+    """
+    判断 path 是否落在 base 之下的某个归档目录里。
+
+    **只看「相对于 base 的中间段」**——既排除文件名，也排除 base 以上的部分。
+    不能拿绝对路径的所有段去比：`/vol1/1000/...` 里的 `1000` 会被当成归档
+    目录名，于是归档目录一旦取成 `1000`、`vol1`、`video` 这类普通字眼，整棵
+    目录树都会被判为归档目录，表现是「扫描完说没有视频」，而界面给的理由
+    （位于原片归档目录）看着还挺合理，很难联想到是名字撞的。改成相对判断后，
+    只有真正位于 base 之内、且某一层目录同名的文件才会被排除。
+
+    base 传 None 时退回「绝对路径的中间段任一段同名」——这是调用方拿不到
+    扫描范围时的保守估计。方向刻意偏向「多排除」：多排除顶多让某个文件扫不到，
+    漏排除却会把归档走的原片重切一遍，切片和原片就都废了。
+    """
+    parts = Path(path).parts
+    if base is None:
+        return any(part in names for part in parts[:-1])
+    try:
+        rel = Path(path).relative_to(Path(base))
+    except ValueError:
+        # 不在这个 base 之下 —— 多目录扫描时每个文件只会命中自己的那一个根，
+        # 其余根判断为「不属于我」正是所要的行为。
+        return False
+    return any(part in names for part in rel.parts[:-1])
+
+
 def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
     """
     扫描目录下的视频文件，自动跳过自己的产物和归档目录。
@@ -1088,7 +1115,7 @@ def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
                     if on_skip:
                         on_skip(p, SKIP_REASON[kind])
                     continue
-                if any(part in skip_dirs for part in p.parts):
+                if is_in_archive_dir(p, base, skip_dirs):
                     if on_skip:
                         on_skip(p, "位于原片归档目录")
                     continue

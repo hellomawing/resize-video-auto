@@ -111,9 +111,10 @@ def build_spec(settings: dict, extra_archive_dirs=None) -> dict:
         # 指定的 + 历史默认名。用集合而不是单个名字 —— 归档目录能按监控目录
         # 分别设置，只排除一个名字的话，别处归档走的原片会被当成新视频再切一遍。
         #
-        # ⚠️ 排除是按「路径里任意一段同名」判断的（与 core.collect_files 一致），
-        # 所以归档目录名不能取成路径上已有的段名（如 vol1、1000），否则会把整棵树
-        # 都排除掉。默认名足够特别，改名前请留意这一点。
+        # 判断「是否在归档目录里」时只比相对扫描根的路径段（见
+        # engine.is_in_archive_dir），所以归档目录名取成 vol1、1000 这类
+        # 路径上已有的段名也不会误伤——但取成监控目录自己的名字仍然会
+        # （那样整个扫描范围都在它"里面"），改名前请留意。
         "archive_dirs": config.collect_archive_dirs(
             settings, extra=extra_archive_dirs),
     }
@@ -121,13 +122,18 @@ def build_spec(settings: dict, extra_archive_dirs=None) -> dict:
 
 def consider_file(path, spec: dict, trigger: str,
                   watchpoint_id: str = None,
-                  mark_override: dict = None) -> tuple[str, str]:
+                  mark_override: dict = None,
+                  roots=None) -> tuple[str, str]:
     """
     判断单个文件该不该入队，返回 (结果, 说明)。
     结果取值：queued / waiting / skipped / duplicate
 
     mark_override 会原样交给入队逻辑，用来实现「这一次手动扫描按指定的
     方式处理原片」，只影响本次入队的任务。
+
+    roots 是本次的扫描根，归档目录判断要用它把路径切成「根之下」的部分
+    （见 engine.is_in_archive_dir）。实时监听那条路上每个文件都有各自的
+    监控目录，所以是列表；不传则按保守方式判断。
     """
     path = Path(path)
     try:
@@ -139,7 +145,9 @@ def consider_file(path, spec: dict, trigger: str,
             return "skipped", "是切分中途的临时分段"
         if engine.is_slice_or_origin(path):
             return "skipped", "是本工具产生的切片或已标记的原片"
-        if any(part in spec["archive_dirs"] for part in path.parts):
+        bases = roots if roots else (None,)
+        if any(engine.is_in_archive_dir(path, b, spec["archive_dirs"])
+               for b in bases):
             return "skipped", "位于原片归档目录"
         if path.suffix.lower() in spec["ignore_suffixes"]:
             return "skipped", "临时文件后缀"
@@ -315,7 +323,7 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
     details = []
     for f in files:
         status, reason = consider_file(f, spec, trigger, watchpoint_id,
-                                       mark_override)
+                                       mark_override, roots=valid_dirs)
         if status == "queued":
             queued += 1
         elif status == "waiting":

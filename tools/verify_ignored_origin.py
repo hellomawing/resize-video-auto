@@ -65,7 +65,7 @@ def main() -> int:
         print("\n临时场景：%s" % tmp)
 
         # --------------------------------------------------------- 收集阶段
-        print("\n[1] collect_files：老行为必须一字不变")
+        print("\n[1] collect_files：on_skip 只是旁路汇报，不改变返回结果")
         plain = engine.collect_files([tmp], {".mp4"}, True, {"origin"})
         check("不传 on_skip 时只返回待处理文件", [p.name for p in plain], ["C.MP4"])
 

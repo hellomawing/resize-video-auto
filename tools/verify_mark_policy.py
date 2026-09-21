@@ -19,6 +19,7 @@
   [6] 入队快照：三级各自生效；入队之后再改设置不影响已排队的任务
   [7] retry：沿用原任务的快照，不因为中途改了设置而换一套行为
   [8] 扫描排除：归档目录里的原片不再被当成新视频（这是防重切的关键一环）
+  [9] 归档目录判断只看「相对扫描根」的路径段：归档名撞上根之上的段名不误伤
 
 全程只在临时目录里造场景，数据目录也指向临时区，不碰项目数据。
 """
@@ -43,6 +44,7 @@ from app import config                       # noqa: E402
 from app import db                           # noqa: E402
 from app.services import queue as job_queue  # noqa: E402
 from app.services import scanner             # noqa: E402
+from core import splitter as engine          # noqa: E402
 
 PASS = FAIL = 0
 
@@ -341,6 +343,77 @@ def check_scan_excludes_archive(tmp: Path) -> None:
                normal_status in ("queued", "waiting"), normal_status)
 
 
+def check_relative_archive_scope(tmp: Path) -> None:
+    """
+    [9] 归档目录判断只看「相对扫描根」的路径段。
+
+    老写法拿绝对路径的**全部**段去比，于是 `/vol1/1000/...` 里的 `1000`
+    会被当成归档目录名。归档目录一旦取成这类普通字眼，整棵目录树都会被判为
+    「位于原片归档目录」，表现是「扫描完说没有视频」——而给的理由看着还挺
+    合理，很难联想到是名字撞的。
+
+    这里把扫描根埋在 `outmost/mid/inbox` 三层之下，再拿上层的段名当归档名，
+    正对着这个坑测。
+    """
+    print("\n[9] 归档目录判断只看相对扫描根的路径段")
+    root = tmp / "scope" / "outmost" / "mid" / "inbox"
+    (root / "origin" / "nested").mkdir(parents=True, exist_ok=True)
+    (root / "sub" / "origin").mkdir(parents=True, exist_ok=True)
+    (root / "demo.mp4").write_bytes(b"\x00" * 4096)
+    (root / "origin" / "archived.mp4").write_bytes(b"\x00" * 4096)
+    (root / "origin" / "nested" / "x.mp4").write_bytes(b"\x00" * 4096)
+    (root / "sub" / "inner.mp4").write_bytes(b"\x00" * 4096)
+    (root / "sub" / "origin" / "deep.mp4").write_bytes(b"\x00" * 4096)
+
+    hit = engine.is_in_archive_dir
+    check_true("根下的普通文件：不算归档", not hit(root / "demo.mp4", root, {"origin"}))
+    check_true("根下的归档子目录：算",
+               hit(root / "origin" / "archived.mp4", root, {"origin"}))
+    check_true("归档目录再深几层：仍算",
+               hit(root / "origin" / "nested" / "x.mp4", root, {"origin"}))
+    check_true("子目录里的归档目录：算",
+               hit(root / "sub" / "origin" / "deep.mp4", root, {"origin"}))
+    check_true("普通子目录里的文件：不算",
+               not hit(root / "sub" / "inner.mp4", root, {"origin"}))
+    check_true("文件名本身撞上归档名：不算",
+               not hit(root / "origin.mp4", root, {"origin.mp4"}))
+    check_true("路径不在这个根之下：不算",
+               not hit(tmp / "elsewhere.mp4", root, {"origin"}))
+
+    # ★ 核心回归：归档名撞上「扫描根之上」的路径段，不能再误伤
+    check_true("归档名 = 根之上的一层（outmost）：不误伤",
+               not hit(root / "demo.mp4", root, {"outmost"}))
+    check_true("归档名 = 根之上的一层（mid）：不误伤",
+               not hit(root / "demo.mp4", root, {"mid"}))
+    check_true("归档名 = 扫描根自己的名字：不误伤",
+               not hit(root / "demo.mp4", root, {"inbox"}))
+    # 对照：同一份数据上，老写法就是会把这些普通文件判成归档
+    check_true("（对照）老写法会把 demo.mp4 判成归档",
+               any(p in {"outmost", "mid", "inbox"} for p in (root / "demo.mp4").parts))
+
+    # collect_files 这条真实路径也要跟着变
+    spec = scanner.build_spec(config.load_settings())
+    spec["archive_dirs"] = set(spec["archive_dirs"]) | {"origin", "outmost", "mid"}
+    files = engine.collect_files([root], {".mp4"}, True, spec["archive_dirs"])
+    check("collect_files 只放过该处理的",
+          sorted(p.name for p in files), ["demo.mp4", "inner.mp4"])
+
+    # consider_file 带上 roots 之后同样生效（扫描侧会把扫描根传进来）
+    spec["threshold"] = 1
+    spec["min_size"] = 0
+    check_true("带 roots：普通文件不被误伤",
+               scanner.consider_file(root / "demo.mp4", spec, "manual",
+                                     roots=[root])[0] in ("queued", "waiting"))
+    check("带 roots：归档目录里的照旧排除",
+          scanner.consider_file(root / "origin" / "archived.mp4", spec, "manual",
+                                roots=[root]),
+          ("skipped", "位于原片归档目录"))
+    check("带 roots：子目录里的归档目录也排除",
+          scanner.consider_file(root / "sub" / "origin" / "deep.mp4", spec,
+                                "manual", roots=[root]),
+          ("skipped", "位于原片归档目录"))
+
+
 def main() -> int:
     db.init_db()
     tmp = Path(tempfile.mkdtemp(prefix="vs-mark-"))
@@ -353,6 +426,7 @@ def main() -> int:
         job = check_enqueue_snapshot(tmp)
         check_retry_keeps_snapshot(job)
         check_scan_excludes_archive(tmp)
+        check_relative_archive_scope(tmp)
     finally:
         db.close_db()
         shutil.rmtree(tmp, ignore_errors=True)

@@ -20,20 +20,39 @@ import sys
 import time
 import paramiko
 
-HOST = os.environ["NAS_HOST"]
-PORT = int(os.environ.get("NAS_PORT", "22"))
-USER = os.environ.get("NAS_USER", "root")
-PASS = os.environ["NAS_PASS"]
+_CFG = None
+
+
+def cfg():
+    """惰性读凭据。
+
+    刻意不在 import 时读：tools/deploy_nas.py 要复用这里的连接逻辑，
+    写成模块级常量的话，import 那一刻没摆好环境变量就会直接炸。
+    """
+    global _CFG
+    if _CFG is None:
+        missing = [k for k in ("NAS_HOST", "NAS_PASS") if not os.environ.get(k)]
+        if missing:
+            raise SystemExit(
+                "缺少环境变量 %s。先设置再运行：\n"
+                "  export NAS_HOST=192.168.5.188 NAS_PORT=7788 "
+                "NAS_USER=admin NAS_PASS='<密码>'\n" % "、".join(missing))
+        _CFG = (os.environ["NAS_HOST"],
+                int(os.environ.get("NAS_PORT", "22")),
+                os.environ.get("NAS_USER", "root"),
+                os.environ["NAS_PASS"])
+    return _CFG
 
 
 def connect():
+    host, port, user, password = cfg()
     cli = paramiko.SSHClient()
     cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     cli.connect(
-        hostname=HOST,
-        port=PORT,
-        username=USER,
-        password=PASS,
+        hostname=host,
+        port=port,
+        username=user,
+        password=password,
         timeout=20,
         banner_timeout=30,
         auth_timeout=30,
@@ -50,7 +69,7 @@ def run(cli, cmd, sudo=False, timeout=300):
     full = "bash -lc " + _q(cmd)
     stdin, stdout, stderr = cli.exec_command(full, timeout=timeout, get_pty=False)
     if sudo:
-        stdin.write(PASS + "\n")
+        stdin.write(cfg()[3] + "\n")
         stdin.flush()
     out = stdout.read().decode("utf-8", "replace")
     err = stderr.read().decode("utf-8", "replace")

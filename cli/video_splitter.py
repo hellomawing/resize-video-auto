@@ -1065,8 +1065,15 @@ def collect_files(folders, exts, recursive: bool, skip_dirs=()):
                 # 跳过本工具自己产生的切片与已标记的原片，避免重复处理
                 if re.search(r"#(?:\d+|origin)$", p.stem, re.IGNORECASE):
                     continue
-                # 跳过归档目录（原片已移进去，不该再切一次）
-                if any(part in skip_dirs for part in p.parts):
+                # 跳过归档目录（原片已移进去，不该再切一次）。
+                # 只比「相对于这个 folder 的中间段」：拿绝对路径的全部段去比的话，
+                # --source-dir 一旦取成 1000、vol1 这类路径上本来就有的段名，
+                # 整棵树都会被判成归档目录，表现是「一个视频都没找到」。
+                try:
+                    rel_parts = p.relative_to(base).parts[:-1]
+                except ValueError:
+                    rel_parts = ()
+                if any(part in skip_dirs for part in rel_parts):
                     continue
                 rp = p.resolve()
                 if rp in seen:
