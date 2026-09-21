@@ -56,6 +56,19 @@ def _read_cred_file():
     return values, path
 
 
+def cred(key, default=None):
+    """取一个连接之外的配置项，顺序同 cfg()：环境变量 → 凭据文件。
+
+    给那些「连接本身不需要、但脚本要用来拼地址」的东西用，例如
+    NAS_HTTP_PORT —— 把内网地址写死进源码，开源那一刻就成了自己的网络指纹。
+    """
+    val = os.environ.get(key)
+    if val:
+        return val
+    file_values, _ = _read_cred_file()
+    return file_values.get(key) or default
+
+
 def cfg():
     """惰性读凭据，返回 ``(host, port, user, password)``。
 

@@ -14,9 +14,10 @@
 
 跑完会把系统设置、监控目录、临时文件、测试产生的任务记录都还原/清掉。
 
-用法：
+用法（接口地址按 参数 → 环境变量 → 凭据文件 的顺序取，仓库里不写死内网地址）：
     python tools/nas_verify_mark_live.py
-    NAS_BASE_URL=http://192.168.5.188:8099 python tools/nas_verify_mark_live.py
+    python tools/nas_verify_mark_live.py http://<NAS 地址>:8099
+    NAS_BASE_URL=http://<NAS 地址>:8099 python tools/nas_verify_mark_live.py
 
 前置：
   - 本机有 ffmpeg（用来造测试视频）
@@ -37,6 +38,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,12 +48,37 @@ sys.path.insert(0, str(ROOT / "tools"))
 import ssh_run                                # noqa: E402
 from core import splitter as engine           # noqa: E402
 
-BASE = (sys.argv[1] if len(sys.argv) > 1
-        else os.environ.get("NAS_BASE_URL", "http://192.168.5.188:8099")).rstrip("/")
+def _resolve_base() -> str:
+    """按 参数 → 环境变量 → 凭据文件 的顺序定出接口地址。
+
+    刻意不在这里写死内网地址：本项目准备开源，源码里带着自己的网络指纹
+    没有意义（而 NAT 之内它也帮不到别人）。凭据文件里本来就有 NAS 主机名，
+    顺手就能拼出来，用户不必再记一个 URL。
+    """
+    if len(sys.argv) > 1:
+        return sys.argv[1].rstrip("/")
+    if os.environ.get("NAS_BASE_URL"):
+        return os.environ["NAS_BASE_URL"].rstrip("/")
+    host = ssh_run.cred("NAS_HOST")
+    if host:
+        return "http://%s:%s" % (host, ssh_run.cred("NAS_HTTP_PORT", "8099"))
+    print("没拿到 NAS 地址，三种给法任选：\n"
+          "  1) python tools/nas_verify_mark_live.py http://<地址>:8099\n"
+          "  2) NAS_BASE_URL=http://<地址>:8099 python tools/nas_verify_mark_live.py\n"
+          "  3) 在 deploy/.nas-credentials 里写 NAS_HOST=<地址>（可选 NAS_HTTP_PORT）")
+    raise SystemExit(2)
+
+
+BASE = _resolve_base()
 #: 测试目录。放在 /vol1 下，容器里挂的就是 /vol1（路径与宿主机一致）
 TEST_DIR = os.environ.get("NAS_TEST_DIR", "/vol1/1000/vs-live-verify")
-#: 监控目录级指定的归档目录名（故意跟系统默认名不一样，才验得出是谁生效）
-WP_ARCHIVE = "live-archive"
+#: 监控目录级指定的归档目录名（故意跟系统默认名不一样，才验得出是谁生效）。
+#:
+#: **每轮都换一个**：归档目录名是「用过就记住」的（只增不减），用固定名字的话
+#: 第二轮开始它早就在记录里了，[5] 那条用例就不再依赖「本次刚刚记住」，
+#: 会悄悄退化成恒真 —— 正是这类用例最容易骗过自己。带随机后缀时，
+#: 它每轮都必须靠本次运行真正写进 archive-dirs.json 才能过。
+WP_ARCHIVE = "live-archive-%s" % uuid.uuid4().hex[:6]
 
 #: 切分阈值。必须明显小于测试视频体积，否则连入队都进不去——
 #: 扫描器对「体积没超过阈值」的文件是按「无需切分」直接跳过的
@@ -241,15 +268,16 @@ def main() -> int:
     print("  容器版本 %s ｜ 运行 %.0f 秒" % (health.get("version"), health.get("uptimeSec")))
 
     _, original = call("GET", "/api/settings")
-    global _baseline_jobs
+    # 收尾里会给 _failed 加一（多入队 = 原片被重切），所以必须声明 global：
+    # 不声明的话 Python 会把 _failed 当成 main 的局部变量，遮蔽掉 check() 里
+    # 一直累加的那个全局计数，最后读它直接 UnboundLocalError。
+    global _failed, _baseline_jobs
     _baseline_jobs = all_job_ids()
     print("  开跑前有 %d 条任务记录（本次新增的收尾会清掉）" % len(_baseline_jobs))
     tmp = ROOT / ".tmp-verify" / "live"
     tmp.mkdir(parents=True, exist_ok=True)
     created_wp = False
-    #: 收尾是否清干净。注意这里必须**在 main 里先赋值**：
-    #: finally 里给 _failed 加 1 会让 Python 把它当成 main 的局部变量，
-    #: 于是 check() 里累加的全局计数被遮蔽，最后读它会直接 UnboundLocalError。
+    #: 收尾是否清干净。同样在 main 里先赋值，理由见上面的 global
     leftover_ok = True
     try:
         # ------------------------------------------------------ 准备
@@ -411,9 +439,9 @@ def main() -> int:
         # 归档目录的使用记录是「只增不减」的（config.collect_archive_dirs），
         # 所以本次用过的 %s 会留在容器的 /data/archive-dirs.json 里，删测试目录
         # 也带不走它。这**不是**脏数据：它只让「恰好也叫这个名字的子目录」被跳过，
-        # 而且老原片还得靠它才不被重切。写出来只是免得日后看见文件里的人看不懂。
-        print("    提示：/data/archive-dirs.json 会留下 %s 这条使用记录（设计如此，"
-              "只增不减）" % WP_ARCHIVE)
+        # 而且老原片还得靠它才不被重切；名字带随机后缀，每跑一轮多一条。
+        print("    提示：/data/archive-dirs.json 会留下 %s 这条使用记录"
+              "（设计如此：只增不减，跑一轮多一条）" % WP_ARCHIVE)
         # 按集合差清理，而不是按脚本记下的 id：多入队的、预期的，一视同仁
         leftover = all_job_ids() - _baseline_jobs
         # 三个用例各该产生一条，多出来的就是有文件被重复入队了 —— 那是**失败**，
