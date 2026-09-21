@@ -6,13 +6,22 @@ import Modal from '../components/Modal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import DirPicker from '../components/DirPicker.vue'
 import ScanModePicker from '../components/ScanModePicker.vue'
+import MarkSourcePicker from '../components/MarkSourcePicker.vue'
 import OriginRescueModal from '../components/OriginRescueModal.vue'
 import { listWatchpoints, createWatchpoint, updateWatchpoint, deleteWatchpoint, scanWatchpoint } from '../api/watchpoints'
 import { getSettings } from '../api/settings'
 import { useToast } from '../composables/useToast'
 import { useScanRescue } from '../composables/useScanRescue'
+import { useScanOverride } from '../composables/useScanOverride'
 import { formatDateTime } from '../composables/useFormat'
-import type { ScanMode, ScanResult, WatchPoint, WatchPointCreate, Settings } from '../api/types'
+import type {
+  MarkValue,
+  ScanMode,
+  ScanOptions,
+  ScanResult,
+  WatchPoint,
+  WatchPointCreate,
+} from '../api/types'
 
 const toast = useToast()
 const rescue = useScanRescue()
@@ -23,6 +32,9 @@ interface FormState {
   scanMode: ScanMode
   scanIntervalHours: number
   scanTime: string
+  /** 原片处理方式。空串 = 跟随系统设置，这是有意的未设置状态 */
+  markSource: MarkValue
+  sourceDir: string
   note: string
 }
 const emptyForm = (): FormState => ({
@@ -31,6 +43,8 @@ const emptyForm = (): FormState => ({
   scanMode: 'realtime',
   scanIntervalHours: 6,
   scanTime: '03:00',
+  markSource: '',
+  sourceDir: '',
   note: '',
 })
 
@@ -49,6 +63,15 @@ const deleteTarget = ref<WatchPoint | null>(null)
 // 正在提交改动的行：行内控件是「改完立刻生效」，靠它挡住同一行的并发提交
 const pending = ref<Set<string>>(new Set())
 const scanningId = ref<string | null>(null)
+
+/**
+ * 手动扫描的「就这一次」覆盖。空串 = 跟随该目录设置，这是默认也是常态；
+ * 用完必须复位，理由见 useScanOverride 的说明。
+ */
+const scanOverride = useScanOverride()
+const { mark: scanMark, dir: scanDir, willDelete: scanWillDelete } = scanOverride
+/** 本次扫描会删源文件时，先拦一道确认 */
+const deleteScanTarget = ref<WatchPoint | null>(null)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -77,6 +100,8 @@ function openEdit(wp: WatchPoint): void {
     scanMode: wp.scanMode,
     scanIntervalHours: wp.scanIntervalHours,
     scanTime: wp.scanTime,
+    markSource: wp.markSource,
+    sourceDir: wp.sourceDir,
     note: wp.note,
   }
   formOpen.value = true
@@ -96,6 +121,8 @@ async function save(): Promise<void> {
         scanMode: form.value.scanMode,
         scanIntervalHours: form.value.scanIntervalHours,
         scanTime: form.value.scanTime,
+        markSource: form.value.markSource,
+        sourceDir: form.value.sourceDir,
         note: form.value.note,
       })
       replaceRow(updated)
@@ -107,6 +134,8 @@ async function save(): Promise<void> {
         scanMode: form.value.scanMode,
         scanIntervalHours: form.value.scanIntervalHours,
         scanTime: form.value.scanTime,
+        markSource: form.value.markSource,
+        sourceDir: form.value.sourceDir,
         note: form.value.note,
       }
       await createWatchpoint(body)
@@ -159,20 +188,45 @@ function onTime(wp: WatchPoint, time: string): void {
   void patch(wp, { scanTime: time })
 }
 
+/** 行内改「原片处理」：立刻提交，值由后端纠正后再回填（见 patch 的说明） */
+function onMarkSource(wp: WatchPoint, value: MarkValue): void {
+  void patch(wp, { markSource: value })
+}
+
+/** 归档子目录名。留空 = 跟随系统设置里的目录名，不是「没有目录」 */
+function onSourceDir(wp: WatchPoint, value: string): void {
+  void patch(wp, { sourceDir: value })
+}
+
 async function toggleRecursive(wp: WatchPoint): Promise<void> {
   await patch(wp, { recursive: !wp.recursive })
+}
+
+/** 扫描入口：本次要删源文件时先拦一道确认，其余照直扫 */
+function askScan(wp: WatchPoint): void {
+  if (scanWillDelete.value) {
+    deleteScanTarget.value = wp
+    return
+  }
+  void scanOne(wp)
 }
 
 async function scanOne(wp: WatchPoint): Promise<void> {
   if (scanningId.value) return
   scanningId.value = wp.id
+  // 取走本次覆盖：options 发给后端，text 留给提示语。
+  // 必须在 await 之前抓快照 —— 扫描期间用户可能又去改了下拉框
+  const snap = scanOverride.take()
   try {
-    const r = await scanWatchpoint(wp.id)
+    const r = await scanWatchpoint(wp.id, snap.options)
+    // 一次性覆盖用完即清，见 useScanOverride 的说明
+    if (snap.options) scanOverride.reset()
     await load()
     // 扫到「切片已不在的原片」时交给兜底流程，见 useScanRescue
-    if (rescue.offer(r, () => rescanOne(wp))) return
+    if (rescue.offer(r, () => rescanOne(wp, snap.options))) return
     // 用后端原话汇报：它会把「跳过 N 个」「M 个还在拷贝中需等待」一并说清
-    toast.success(r.message || `扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`)
+    const summary = r.message || `扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`
+    toast.success(scanOverride.annotate(summary, snap))
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '扫描失败')
   } finally {
@@ -180,9 +234,20 @@ async function scanOne(wp: WatchPoint): Promise<void> {
   }
 }
 
-/** 恢复原名之后再扫一遍。刻意不再走 offer，免得来回弹窗 */
-async function rescanOne(wp: WatchPoint): Promise<ScanResult> {
-  const r = await scanWatchpoint(wp.id)
+/** 确认「本次会删源文件」之后再往下走 */
+async function confirmDeleteScan(): Promise<void> {
+  const wp = deleteScanTarget.value
+  deleteScanTarget.value = null
+  if (!wp) return
+  await scanOne(wp)
+}
+
+/**
+ * 恢复原名之后再扫一遍。刻意不再走 offer，免得来回弹窗。
+ * override 沿用发起这次动作时的取值，保证「一次点击」内部行为一致。
+ */
+async function rescanOne(wp: WatchPoint, override?: ScanOptions): Promise<ScanResult> {
+  const r = await scanWatchpoint(wp.id, override)
   await load()
   return r
 }
@@ -224,6 +289,7 @@ const columns = [
   { key: 'path', label: '路径' },
   { key: 'recursive', label: '递归', width: '80px' },
   { key: 'scanMode', label: '扫描方式', width: '290px' },
+  { key: 'markSource', label: '原片处理', width: '250px' },
   { key: 'lastScanAt', label: '上次扫描', width: '170px' },
   { key: 'nextScanAt', label: '下次扫描', width: '170px' },
   { key: 'note', label: '备注' },
@@ -244,6 +310,22 @@ const columns = [
         </div>
       </div>
       <button class="btn btn--primary" @click="openAdd">+ 新增监控目录</button>
+    </div>
+
+    <!--
+      手动扫描的「就这一次」覆盖。刻意做成页级控件而不是塞进每一行：
+      它的语义是「这一批手动扫描按这个来」，放进行里会被误读成能长期生效。
+      长期偏好放在表格的「原片处理」列。
+    -->
+    <div class="scan-bar">
+      <span class="scan-bar-label">手动扫描本次处理源片：</span>
+      <MarkSourcePicker
+        v-model="scanMark"
+        v-model:source-dir="scanDir"
+        follow-label="跟随各级设置"
+        compact
+      />
+      <span v-if="scanMark" class="scan-bar-flag">仅本次 · 扫完自动复位</span>
     </div>
 
     <div class="card">
@@ -268,12 +350,23 @@ const columns = [
               @update:scan-time="(v) => onTime(wp, v)"
             />
           </td>
+          <td>
+            <MarkSourcePicker
+              :model-value="wp.markSource"
+              :source-dir="wp.sourceDir"
+              follow-label="跟随系统设置"
+              :disabled="pending.has(wp.id)"
+              compact
+              @update:model-value="(v) => onMarkSource(wp, v)"
+              @update:source-dir="(v) => onSourceDir(wp, v)"
+            />
+          </td>
           <td class="faint">{{ formatDateTime(wp.lastScanAt) }}</td>
           <td class="faint">{{ nextScanText(wp) }}</td>
           <td class="text-ellipsis" :title="wp.note">{{ wp.note || '—' }}</td>
           <td>
             <div class="row">
-              <button class="btn btn--sm" :disabled="scanningId === wp.id" @click="scanOne(wp)">
+              <button class="btn btn--sm" :disabled="scanningId === wp.id" @click="askScan(wp)">
                 <span v-if="scanningId === wp.id" class="spinner" /> 扫描
               </button>
               <button class="btn btn--sm" @click="openEdit(wp)">编辑</button>
@@ -314,6 +407,14 @@ const columns = [
         <div class="field-hint">开启后会一并扫描该目录下的所有子目录</div>
       </div>
       <div class="field">
+        <label class="field-label">原片处理方式</label>
+        <MarkSourcePicker v-model="form.markSource" v-model:source-dir="form.sourceDir" />
+        <div class="field-hint">
+          切分成功后怎么处置原片。留「跟随系统设置」就按系统设置里的默认值来；
+          这里设了就以这里为准。
+        </div>
+      </div>
+      <div class="field">
         <label class="field-label">备注</label>
         <input v-model="form.note" class="input" placeholder="如：相机导入目录" />
       </div>
@@ -342,6 +443,26 @@ const columns = [
       </template>
     </Modal>
 
+    <!-- 本次扫描会删源文件：不可逆，动手前必须先问一句 -->
+    <Modal
+      :model-value="deleteScanTarget !== null"
+      title="确认删除源文件"
+      @update:model-value="(v) => { if (!v) deleteScanTarget = null }"
+    >
+      <p>
+        本次扫描会把
+        <strong>{{ deleteScanTarget?.path }}</strong>
+        下切分成功的原片<strong class="danger-text">永久删除</strong>，无法恢复。
+      </p>
+      <p class="faint">
+        只影响这一次手动扫描，扫完「本次处理」会自动复位，目录的长期设置不变。
+      </p>
+      <template #footer>
+        <button class="btn" @click="deleteScanTarget = null">取消</button>
+        <button class="btn btn--danger" @click="confirmDeleteScan">确认并扫描</button>
+      </template>
+    </Modal>
+
     <!-- 扫到「切片已不在的原片」时的动作入口 -->
     <OriginRescueModal
       v-model="rescue.state.open"
@@ -360,6 +481,35 @@ const columns = [
   gap: var(--space-2);
   color: var(--color-text-soft);
   padding: var(--space-4);
+}
+.scan-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+.scan-bar-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-soft);
+  /* 与紧凑控件等高，让文字基线跟下拉框对齐 */
+  line-height: 30px;
+  white-space: nowrap;
+}
+.scan-bar-flag {
+  align-self: center;
+  font-size: var(--font-size-xs);
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  white-space: nowrap;
+}
+.danger-text {
+  color: var(--color-danger);
 }
 .page-note {
   margin-top: var(--space-3);

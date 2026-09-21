@@ -1,5 +1,5 @@
 import { request } from './client'
-import type { Health, Stats, BrowseResult, ScanResult } from './types'
+import type { Health, Stats, BrowseResult, ScanOptions, ScanResult } from './types'
 
 export const getHealth = (): Promise<Health> => request<Health>('/health')
 
@@ -11,6 +11,9 @@ export const browse = (path?: string): Promise<BrowseResult> => {
   return request<BrowseResult>(`/browse${q}`)
 }
 
-/** 扫描全部已启用的监控目录并入队 */
-export const scanAll = (): Promise<ScanResult> =>
-  request<ScanResult>('/scan', { method: 'POST' })
+/**
+ * 扫描全部监控目录并入队。
+ * options 指定「就这一次」原片怎么处理；不传则各目录按自己的设置来。
+ */
+export const scanAll = (options?: ScanOptions): Promise<ScanResult> =>
+  request<ScanResult>('/scan', { method: 'POST', body: options })

@@ -52,6 +52,14 @@ export type SplitMode = 'auto' | 'copy' | 'bytes'
 export type OutdirMode = 'same' | 'custom'
 export type MarkSource = 'rename' | 'move' | 'none' | 'delete'
 
+/**
+ * 原片处理方式 + 「跟随上级」的空串。
+ *
+ * 空串是一个**有意义的取值**，不是缺省值：在监控目录那一层表示「跟随系统设置」。
+ * 系统设置那一层没有上级可跟随，所以那里的控件要把「跟随」项藏掉。
+ */
+export type MarkValue = MarkSource | ''
+
 export interface SplitSettings {
   mode: SplitMode
   bySize: boolean
@@ -62,7 +70,11 @@ export interface SplitSettings {
   recursive: boolean
   outdirMode: OutdirMode
   outdir: string
-  markSource: MarkSource
+  /**
+   * 原片处理方式。系统设置这一层没有上级可跟随，界面上不提供空串选项；
+   * 万一被手改成空串，后端 normalize 会按默认值纠正，所以这里照实标成 MarkValue。
+   */
+  markSource: MarkValue
   sourceDir: string
   keepMetadata: boolean
   overwrite: boolean
@@ -100,6 +112,12 @@ export interface WatchPoint {
   scanMode: ScanMode
   scanIntervalHours: number
   scanTime: string
+  /**
+   * 原片处理方式。空串表示「跟随系统设置」——这是有意的未设置状态，
+   * 不是缺省值；解析优先级见后端 config.resolve_mark_policy
+   */
+  markSource: MarkValue
+  sourceDir: string
   note: string
   createdAt: string
   lastScanAt: string | null
@@ -113,7 +131,18 @@ export interface WatchPointCreate {
   scanMode: ScanMode
   scanIntervalHours: number
   scanTime: string
+  markSource: MarkValue
+  sourceDir: string
   note: string
+}
+
+/**
+ * 手动扫描时的临时覆盖参数：字段留空 = 跟随该监控目录 / 系统设置。
+ * 只作用于本次入队的任务，不会写进任何配置。
+ */
+export interface ScanOptions {
+  markSource?: MarkSource
+  sourceDir?: string
 }
 
 /** 扫描时「看到了但按规则没处理」的文件 */
@@ -194,6 +223,9 @@ export interface Job {
   outdir: string
   trigger: JobTrigger
   watchpointId: string | null
+  /** 入队那一刻定下的原片处理方式（快照）。老任务可能为 null */
+  markSource: string | null
+  sourceDir: string | null
   message: string
   error: string | null
   produced: ProducedFile[]

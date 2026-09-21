@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -20,8 +21,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# 扫描链路会读配置、并可能把任务写进 SQLite，所以数据目录必须指到临时区。
+# 关键在时机：DATA_DIR 是 app.config 导入时算好的常量，晚一步就落到开发机的
+# data/ 上——那里可能还躺着建库时没有新列的旧库，一查就报列不存在。
+os.environ["VS_DATA_DIR"] = tempfile.mkdtemp(prefix="vs-verify-data-")
+
 from core import splitter as engine          # noqa: E402
 from core import undo                        # noqa: E402
+from app import db                           # noqa: E402
 from app.services import scanner             # noqa: E402
 
 PASS = FAIL = 0
@@ -51,6 +58,7 @@ def build_scene(tmp: Path) -> None:
 
 
 def main() -> int:
+    db.init_db()          # 临时数据目录里还没有库，先建表
     tmp = Path(tempfile.mkdtemp(prefix="vs-verify-"))
     try:
         build_scene(tmp)

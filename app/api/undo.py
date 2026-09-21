@@ -40,7 +40,9 @@ def preview(payload: UndoPreviewIn) -> UndoPreviewOut:
 
     groups, orphans, origin_only = undo.scan_groups(
         target, recursive=payload.recursive,
-        source_dir=settings["split"].get("sourceDir") or "origin",
+        # 把所有可能的归档目录名都算上：它随监控目录/系统设置变化，
+        # 只认当前那一个名字的话，早先归档走的原片就配不上对了
+        source_dir=config.collect_archive_dirs(settings),
         ffprobe=ffprobe)
 
     ok_count = sum(1 for g in groups if g["ok"])
@@ -66,7 +68,7 @@ def apply(payload: UndoApplyIn) -> UndoApplyOut:
     ffprobe = engine.find_bin("ffprobe")
     report = undo.apply_undo(
         target, recursive=payload.recursive,
-        source_dir=settings["split"].get("sourceDir") or "origin",
+        source_dir=config.collect_archive_dirs(settings),
         delete_slices=payload.delete_slices,
         restore=payload.restore_origin,
         restore_origin_only=payload.restore_origin_only,

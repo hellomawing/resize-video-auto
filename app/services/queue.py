@@ -63,11 +63,24 @@ def resolve_outdir(src: Path, settings: dict) -> Path:
 
 # ---------------------------------------------------------------- 入队
 
+def _watchpoint(wp_id: str | None) -> dict | None:
+    """按 id 取监控目录配置。取不到就返回 None，任务按系统默认解析。"""
+    if not wp_id:
+        return None
+    for wp in config.load_watchpoints():
+        if wp.get("id") == wp_id:
+            return wp
+    return None
+
+
 def enqueue(src, trigger: str = "manual", watchpoint_id: str = None,
-            src_size: int = None) -> tuple:
+            src_size: int = None, mark_override: dict = None) -> tuple:
     """
     创建一个排队任务。返回 (job, reason)：
         job 非 None 表示入队成功；job 为 None 时 reason 说明被拒的原因。
+
+    mark_override 是「就这一次」的原片处理方式（手动扫描时临时选的），
+    优先级高于该监控目录的设置与系统默认值。
     """
     src = Path(src)
     if not src.is_file():
@@ -88,6 +101,10 @@ def enqueue(src, trigger: str = "manual", watchpoint_id: str = None,
 
     job_id = new_job_id()
     outdir = resolve_outdir(src, settings)
+    # 原片处理方式在入队这一刻就定下来（本次手动 > 该目录设置 > 系统默认），
+    # 快照进任务行；执行阶段直接用它，不再回头读设置
+    policy = config.resolve_mark_policy(settings, _watchpoint(watchpoint_id),
+                                        mark_override)
     job = {
         "id": job_id,
         "src": str(src),
@@ -103,6 +120,8 @@ def enqueue(src, trigger: str = "manual", watchpoint_id: str = None,
         "used_mode": None,
         "trigger": trigger,
         "watchpoint_id": watchpoint_id,
+        "mark_source": policy["markSource"],
+        "source_dir": policy["sourceDir"],
         "message": "已加入队列，等待处理",
         "error": None,
         "produced": [],
@@ -180,8 +199,13 @@ def retry(job_id: str) -> tuple:
     if job["status"] in ("queued", "running"):
         return False, "任务正在进行中，无需重试", None
 
-    new_job, reason = enqueue(Path(job["src"]), trigger="retry",
-                              watchpoint_id=job.get("watchpointId"))
+    # 沿用原任务的处理方式：重试的是同一个文件，用户要的是「把上次没做完的
+    # 事做完」，而不是按现在的设置换一套行为
+    new_job, reason = enqueue(
+        Path(job["src"]), trigger="retry",
+        watchpoint_id=job.get("watchpointId"),
+        mark_override={"markSource": job.get("markSource"),
+                       "sourceDir": job.get("sourceDir")})
     if new_job is None:
         return False, reason, None
     return True, "已重新加入队列", new_job

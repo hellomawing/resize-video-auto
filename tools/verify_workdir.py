@@ -27,7 +27,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# 扫描链路会读配置、并可能把任务写进 SQLite，所以数据目录必须指到临时区。
+# 关键在时机：DATA_DIR 是 app.config 导入时算好的常量，晚一步就落到开发机的
+# data/ 上——那里可能还躺着建库时没有新列的旧库，一查就报列不存在。
+os.environ["VS_DATA_DIR"] = tempfile.mkdtemp(prefix="vs-verify-data-")
+
 from core import splitter as engine          # noqa: E402
+from app import config                       # noqa: E402
+from app import db                           # noqa: E402
 from app.services import scanner             # noqa: E402
 
 PASS = FAIL = 0
@@ -152,8 +159,11 @@ def check_scanner_ignores(tmp: Path) -> None:
     check("候选里只剩真视频", [p.name for p in files], ["真视频.mp4"])
     check("临时分段不该产生「跳过」汇报（那不是用户的文件）", seen, [])
 
+    # archive_dirs 是个集合：归档目录名可以按监控目录分别设置，
+    # 扫描时必须把所有候选名一起排除，否则被 move 走的原片会被当成新视频重切
     spec = {"exts": {".mp4"}, "min_size": 0, "all": True, "recursive": True,
-            "settle": 0, "ignore_suffixes": (), "source_dir": "origin",
+            "settle": 0, "ignore_suffixes": (),
+            "archive_dirs": {"origin", config.DEFAULT_SOURCE_DIR},
             "threshold": 1}
     status, reason = scanner.consider_file(work / "part_00001.mp4", spec, "manual")
     check("consider_file 的结果", status, "skipped")
@@ -197,6 +207,7 @@ def check_real_split(tmp: Path) -> None:
 
 
 def main() -> int:
+    db.init_db()          # 临时数据目录里还没有库，先建表
     tmp = ROOT / ".tmp-verify-workdir"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)

@@ -87,7 +87,7 @@ tracker = StabilityTracker()
 
 # ---------------------------------------------------------------- 过滤条件
 
-def build_spec(settings: dict) -> dict:
+def build_spec(settings: dict, extra_archive_dirs=None) -> dict:
     split = settings["split"]
     watch = settings["watch"]
     try:
@@ -107,15 +107,27 @@ def build_spec(settings: dict) -> dict:
         "settle": int(watch.get("settleSeconds") or 0),
         "ignore_suffixes": tuple(
             s.lower() for s in (watch.get("ignoreSuffixes") or [])),
-        "source_dir": split.get("sourceDir") or "origin",
+        # 所有可能被当作归档目录的名字：系统默认 + 各监控目录用到的 + 本次覆盖
+        # 指定的 + 历史默认名。用集合而不是单个名字 —— 归档目录能按监控目录
+        # 分别设置，只排除一个名字的话，别处归档走的原片会被当成新视频再切一遍。
+        #
+        # ⚠️ 排除是按「路径里任意一段同名」判断的（与 core.collect_files 一致），
+        # 所以归档目录名不能取成路径上已有的段名（如 vol1、1000），否则会把整棵树
+        # 都排除掉。默认名足够特别，改名前请留意这一点。
+        "archive_dirs": config.collect_archive_dirs(
+            settings, extra=extra_archive_dirs),
     }
 
 
 def consider_file(path, spec: dict, trigger: str,
-                  watchpoint_id: str = None) -> tuple[str, str]:
+                  watchpoint_id: str = None,
+                  mark_override: dict = None) -> tuple[str, str]:
     """
     判断单个文件该不该入队，返回 (结果, 说明)。
     结果取值：queued / waiting / skipped / duplicate
+
+    mark_override 会原样交给入队逻辑，用来实现「这一次手动扫描按指定的
+    方式处理原片」，只影响本次入队的任务。
     """
     path = Path(path)
     try:
@@ -127,7 +139,7 @@ def consider_file(path, spec: dict, trigger: str,
             return "skipped", "是切分中途的临时分段"
         if engine.is_slice_or_origin(path):
             return "skipped", "是本工具产生的切片或已标记的原片"
-        if spec["source_dir"] in path.parts:
+        if any(part in spec["archive_dirs"] for part in path.parts):
             return "skipped", "位于原片归档目录"
         if path.suffix.lower() in spec["ignore_suffixes"]:
             return "skipped", "临时文件后缀"
@@ -145,7 +157,8 @@ def consider_file(path, spec: dict, trigger: str,
         return "waiting", reason
 
     job, why = job_queue.enqueue(path, trigger=trigger,
-                                watchpoint_id=watchpoint_id, src_size=size)
+                                watchpoint_id=watchpoint_id, src_size=size,
+                                mark_override=mark_override)
     if job is None:
         return "duplicate", why
     tracker.forget(path)
@@ -257,10 +270,15 @@ def _scan_message(found: int, queued: int, waiting: int, skipped: int,
 
 
 def scan_paths(paths, trigger: str, watchpoint_id: str = None,
-               respect_settle: bool = True) -> dict:
-    """扫描若干目录并入队，返回统计结果。"""
+               respect_settle: bool = True, mark_override: dict = None) -> dict:
+    """扫描若干目录并入队，返回统计结果。
+
+    mark_override 是「就这一次」的原片处理方式（手动扫描时前端传进来的，
+    camelCase 键），只作用于本次入队的任务，不写回任何配置。
+    """
     settings = config.load_settings()
-    spec = build_spec(settings)
+    extra = [mark_override.get("sourceDir")] if mark_override else None
+    spec = build_spec(settings, extra_archive_dirs=extra)
     if not respect_settle:
         spec["settle"] = 0
 
@@ -291,12 +309,13 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
         raw_skips.append((Path(path), reason))
 
     files = engine.collect_files(valid_dirs, spec["exts"], spec["recursive"],
-                                {spec["source_dir"]}, on_skip=_note_skip)
+                                spec["archive_dirs"], on_skip=_note_skip)
 
     queued = waiting = skipped = 0
     details = []
     for f in files:
-        status, reason = consider_file(f, spec, trigger, watchpoint_id)
+        status, reason = consider_file(f, spec, trigger, watchpoint_id,
+                                       mark_override)
         if status == "queued":
             queued += 1
         elif status == "waiting":
@@ -321,10 +340,12 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
             "details": sorted(set(details))[:5]}
 
 
-def scan_watchpoint(watchpoint: dict, trigger: str = "manual") -> dict:
+def scan_watchpoint(watchpoint: dict, trigger: str = "manual",
+                    mark_override: dict = None) -> dict:
     """扫描单个监控目录，并回写它的 lastScanAt / videoCount。"""
     result = scan_paths([watchpoint["path"]], trigger,
-                        watchpoint_id=watchpoint.get("id"))
+                        watchpoint_id=watchpoint.get("id"),
+                        mark_override=mark_override)
     watchpoints = config.load_watchpoints()
     for wp in watchpoints:
         if wp.get("id") == watchpoint.get("id"):
@@ -335,7 +356,8 @@ def scan_watchpoint(watchpoint: dict, trigger: str = "manual") -> dict:
     return result
 
 
-def scan_all(trigger: str = "manual", watchpoint_ids=None) -> dict:
+def scan_all(trigger: str = "manual", watchpoint_ids=None,
+             mark_override: dict = None) -> dict:
     """
     扫描全部（或指定）监控目录 —— 这是「立即扫描」的入口。
 
@@ -352,7 +374,7 @@ def scan_all(trigger: str = "manual", watchpoint_ids=None) -> dict:
              "ignored": [], "ignoredTotal": 0,
              "resettableTotal": 0, "resettableDirs": [], "details": []}
     for wp in watchpoints:
-        r = scan_watchpoint(wp, trigger)
+        r = scan_watchpoint(wp, trigger, mark_override=mark_override)
         for key in ("found", "queued", "skipped", "waiting",
                     "ignoredTotal", "resettableTotal"):
             total[key] += r.get(key, 0)

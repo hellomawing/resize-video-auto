@@ -35,6 +35,25 @@ WATCHPOINTS_PATH = DATA_DIR / "watchpoints.json"
 SCHEDULES_PATH = DATA_DIR / "schedules.json"
 DB_PATH = DATA_DIR / "video-splitter.db"
 
+# ---------------------------------------------------------------- 原片处理方式
+
+# split.markSource 的四个取值，与 core/splitter.mark_source 的 mode 参数一致：
+#   rename 给原片加 #origin 后缀，留在原文件夹
+#   move   把原片移到同级的归档子目录（目录名见 DEFAULT_SOURCE_DIR）
+#   none   原地不动（⚠️ 原片保持原名，持续监控下会被当成新视频再切一遍）
+#   delete 切分成功后直接删除原片（不可恢复）
+MARK_SOURCES = ("rename", "move", "none", "delete")
+DEFAULT_MARK_SOURCE = "rename"
+
+# 归档子目录的默认名。它必须是**单层目录名**——语义就是「当前文件夹下的
+# 某个子文件夹」，所以带斜杠、`.`, `..` 这类写法都要被纠正掉。
+DEFAULT_SOURCE_DIR = "resize-video-origin-file"
+
+# 历史版本用过的默认归档目录名（旧默认值是 origin）。改名之后仍要参与
+# 扫描排除：早先被 move 进去的原片还躺在这些目录里，一旦不排除，
+# 它们就会被当成新视频重新切一遍。
+LEGACY_SOURCE_DIRS = ("origin",)
+
 # ---------------------------------------------------------------- 默认设置
 
 DEFAULT_SETTINGS = {
@@ -51,8 +70,8 @@ DEFAULT_SETTINGS = {
         "recursive": True,
         "outdirMode": "same",       # same | custom
         "outdir": "",
-        "markSource": "rename",     # rename | move | none | delete
-        "sourceDir": "origin",
+        "markSource": DEFAULT_MARK_SOURCE,   # 见上方 MARK_SOURCES
+        "sourceDir": DEFAULT_SOURCE_DIR,
         "keepMetadata": True,
         "overwrite": False,
         "debug": False,
@@ -145,8 +164,8 @@ def _normalize_settings(s: dict) -> dict:
     split = s["split"]
     if split.get("mode") not in ("auto", "copy", "bytes"):
         split["mode"] = "auto"
-    if split.get("markSource") not in ("rename", "move", "none", "delete"):
-        split["markSource"] = "rename"
+    if split.get("markSource") not in MARK_SOURCES:
+        split["markSource"] = DEFAULT_MARK_SOURCE
     if split.get("outdirMode") not in ("same", "custom"):
         split["outdirMode"] = "same"
     split["bySize"] = bool(split.get("bySize", True))
@@ -165,8 +184,9 @@ def _normalize_settings(s: dict) -> dict:
         split["size"] = DEFAULT_SETTINGS["split"]["size"]
     if not isinstance(split.get("outdir"), str):
         split["outdir"] = ""
-    if not isinstance(split.get("sourceDir"), str) or not split["sourceDir"].strip():
-        split["sourceDir"] = "origin"
+    # 老配置里的 "origin" 是历史默认值（不是用户的刻意选择），统一迁到新默认名；
+    # 顺带把带斜杠、`.`、`..` 这类非法写法一并纠正
+    split["sourceDir"] = normalize_source_dir(split.get("sourceDir"))
 
     watch = s["watch"]
     watch["realtime"] = bool(watch.get("realtime", True))
@@ -260,6 +280,14 @@ def normalize_watchpoint(item: dict) -> dict:
 
     out["scanTime"] = _normalize_scan_time(out.get("scanTime"))
     out["recursive"] = bool(out.get("recursive", True))
+
+    # 原片处理方式。空串 = 跟随系统设置，**刻意不在这里补默认值**：
+    # 「跟随」本身是一个有意义的状态，补成具体值之后就再也升不了级了。
+    if out.get("markSource") not in MARK_SOURCES:
+        out["markSource"] = ""
+    raw_dir = out.get("sourceDir")
+    out["sourceDir"] = (normalize_source_dir(raw_dir)
+                        if isinstance(raw_dir, str) and raw_dir.strip() else "")
     if not isinstance(out.get("note"), str):
         out["note"] = ""
     if not isinstance(out.get("path"), str):
@@ -313,3 +341,91 @@ def load_schedules() -> list:
 def save_schedules(items: list) -> None:
     with _lock:
         _atomic_write(SCHEDULES_PATH, items)
+
+
+# ---------------------------------------------------------------- 原片处理策略
+
+def normalize_source_dir(value) -> str:
+    """
+    归档子目录名只允许是「单层目录名」。
+
+    它的语义本来就是「当前文件夹下的某个子文件夹」，所以：
+      * `origin/old`、`/abs/path` 这类多层的，只取最后一段；
+      * `.` / `..` 这种会指回自身或上级的，直接退回默认名；
+      * 空的也退回默认名；
+      * 历史默认名（origin）也退回默认名 —— 那不是用户的刻意选择，
+        留着只会让老配置永远停在旧名字上。
+
+    这个目录名最终会拼进文件路径，在这里挡住比事后再补救靠前得多。
+    """
+    text = str(value or "").strip().replace("\\", "/").strip("/")
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1].strip()
+    if not text or text in (".", ".."):
+        return DEFAULT_SOURCE_DIR
+    if text.lower() in LEGACY_SOURCE_DIRS:
+        return DEFAULT_SOURCE_DIR
+    return text
+
+
+def resolve_mark_policy(settings: dict, watchpoint: dict = None,
+                        override: dict = None) -> dict:
+    """
+    决定「这一个任务该怎么处理原片」。优先级：
+
+        本次手动指定  >  该监控目录的设置  >  系统设置里的默认值
+
+    返回 {"markSource": ..., "sourceDir": ...}，会被**快照进任务记录**。
+
+    为什么不在执行时才去读设置：任务在队列里可能等很久，中途改一次设置就让
+    排在后面的任务换一套行为，会出现「同一个目录扫出来的两批任务处理方式不
+    一样」这种没法解释的结果；而且事后翻任务也看不出它当时用的是哪条规则。
+    快照语义下，改设置只影响之后入队的任务。
+    """
+    split = (settings or {}).get("split") or {}
+    fallback_mark = split.get("markSource")
+    out = {
+        "markSource": (fallback_mark if fallback_mark in MARK_SOURCES
+                       else DEFAULT_MARK_SOURCE),
+        "sourceDir": normalize_source_dir(split.get("sourceDir")),
+    }
+
+    # 两层覆盖依次叠上去，后一层（本次手动）自然压过前一层（该目录设置）
+    for layer in (watchpoint, override):
+        layer = layer or {}
+        mark = layer.get("markSource")
+        if mark in MARK_SOURCES:
+            out["markSource"] = mark
+        raw_dir = layer.get("sourceDir")
+        if isinstance(raw_dir, str) and raw_dir.strip():
+            out["sourceDir"] = normalize_source_dir(raw_dir)
+    return out
+
+
+def collect_archive_dirs(settings: dict = None, watchpoints=None,
+                         extra=None) -> set:
+    """
+    列出所有「可能被当作归档目录」的名字，供扫描排除使用。
+
+    为什么是个集合而不是单个名字：归档目录可以按监控目录分别设置，
+    A 目录用 `origin`、B 目录用别的名字；扫描 A 时如果不把 B 的名字也排除掉，
+    那些被 move 走的原片就会被当成新视频再切一遍。历史默认名同样要算进来
+    ——改名之前搬进去的文件还躺在那些目录里。
+    """
+    names = set(LEGACY_SOURCE_DIRS)
+    if settings is None:
+        settings = load_settings()
+    names.add(normalize_source_dir((settings or {}).get("split", {}).get("sourceDir")))
+
+    if watchpoints is None:
+        watchpoints = load_watchpoints()
+    for wp in watchpoints or ():
+        raw = (wp or {}).get("sourceDir")
+        if isinstance(raw, str) and raw.strip():
+            names.add(normalize_source_dir(raw))
+
+    for raw in (extra or ()):
+        if isinstance(raw, str) and raw.strip():
+            names.add(normalize_source_dir(raw))
+
+    return {n for n in names if n}

@@ -12,7 +12,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from .. import config, db
-from ..models import ScanResult, WatchPoint, WatchPointCreate, WatchPointUpdate
+from ..models import (ScanIn, ScanResult, WatchPoint, WatchPointCreate,
+                      WatchPointUpdate)
 from ..services import scanner, scheduler
 from ..services.monitor import monitor as monitor_service
 from .system import ensure_allowed
@@ -66,6 +67,9 @@ def create_watchpoint(payload: WatchPointCreate) -> WatchPoint:
         "scanMode": payload.scan_mode,
         "scanIntervalHours": payload.scan_interval_hours,
         "scanTime": payload.scan_time,
+        # 空串 = 跟随系统设置（不是「没填」）
+        "markSource": payload.mark_source or "",
+        "sourceDir": payload.source_dir or "",
         "note": payload.note or "",
         "createdAt": db.now_iso(),
         "lastScanAt": None,
@@ -89,6 +93,12 @@ def update_watchpoint(wp_id: str, payload: WatchPointUpdate) -> WatchPoint:
         item["scanIntervalHours"] = int(payload.scan_interval_hours)
     if payload.scan_time is not None:
         item["scanTime"] = payload.scan_time
+    # 这里判的是 None 而不是空串：空串是有意义的取值，意思正好相反 ——
+    # 「清掉本目录的覆盖，改回跟随系统设置」
+    if payload.mark_source is not None:
+        item["markSource"] = payload.mark_source
+    if payload.source_dir is not None:
+        item["sourceDir"] = payload.source_dir
     if payload.note is not None:
         item["note"] = payload.note
 
@@ -108,10 +118,13 @@ def delete_watchpoint(wp_id: str) -> dict:
 
 
 @router.post("/{wp_id}/scan", response_model=ScanResult)
-def scan_watchpoint(wp_id: str) -> ScanResult:
+def scan_watchpoint(wp_id: str, payload: ScanIn | None = None) -> ScanResult:
     """
     立即扫描一次 —— 这是「手动分割」的入口，刻意不做任何 scanMode 判断：
     哪怕这个目录设成「仅手动」，用户点它就该扫。
+
+    body 可选：临时指定「这一次」原片怎么处理，优先级高于本目录的设置。
+    不传就按本目录设置，再退回系统默认值。
 
     注意仍然会走文件稳定检测，正在拷贝的文件会被延后处理，这不是卡住了，
     而是在保护你的数据。
@@ -120,5 +133,7 @@ def scan_watchpoint(wp_id: str) -> ScanResult:
     item = _find(watchpoints, wp_id)
     if not Path(item["path"]).is_dir():
         raise HTTPException(status_code=400, detail="目录已不存在：%s" % item["path"])
-    result = scanner.scan_watchpoint(item, trigger="manual")
+    override = payload.model_dump(by_alias=True) if payload else None
+    result = scanner.scan_watchpoint(item, trigger="manual",
+                                     mark_override=override)
     return ScanResult.from_engine(result)

@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     used_mode     TEXT,
     trigger       TEXT,
     watchpoint_id TEXT,
+    mark_source   TEXT,
+    source_dir    TEXT,
     message       TEXT,
     error         TEXT,
     produced      TEXT,
@@ -85,10 +87,27 @@ def get_conn() -> sqlite3.Connection:
         return _conn
 
 
+# 建表语句（CREATE TABLE IF NOT EXISTS）只对**新库**生效：已经存在的老库
+# 不会因为 SCHEMA 里多写了几列就跟着变，所以新增列必须在下面补一次迁移。
+_JOB_ADDED_COLUMNS = (
+    ("mark_source", "TEXT"),
+    ("source_dir", "TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """给老库补上新加的列。幂等，每次启动都能安全地跑一遍。"""
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+    for name, sql_type in _JOB_ADDED_COLUMNS:
+        if name not in have:
+            conn.execute("ALTER TABLE jobs ADD COLUMN %s %s" % (name, sql_type))
+
+
 def init_db() -> None:
     with _lock:
         conn = get_conn()
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
         # 上次进程是被强杀的，运行中的任务不可能还在跑，标记为中断
         conn.execute(
@@ -130,6 +149,9 @@ def row_to_job(row: sqlite3.Row) -> dict:
         "usedMode": row["used_mode"],
         "trigger": row["trigger"],
         "watchpointId": row["watchpoint_id"],
+        # 任务入队那一刻解析好的原片处理方式。是**快照**，不代表当前设置
+        "markSource": row["mark_source"],
+        "sourceDir": row["source_dir"],
         "message": row["message"],
         "error": row["error"],
         "produced": _loads(row["produced"], []),
@@ -162,6 +184,7 @@ def _loads(text, default):
 JOB_COLUMNS = (
     "id", "src", "src_name", "src_size", "outdir", "status", "phase", "progress",
     "parts_total", "parts_done", "mode", "used_mode", "trigger", "watchpoint_id",
+    "mark_source", "source_dir",
     "message", "error", "produced", "warnings", "duration_sec",
     "created_at", "started_at", "finished_at",
 )
@@ -180,7 +203,9 @@ def insert_job(job: dict) -> bool:
         job.get("outdir"), job.get("status", "queued"), job.get("phase", "waiting"),
         job.get("progress", 0.0), job.get("parts_total", 0), job.get("parts_done", 0),
         job.get("mode"), job.get("used_mode"), job.get("trigger"),
-        job.get("watchpoint_id"), job.get("message"), job.get("error"),
+        job.get("watchpoint_id"),
+        job.get("mark_source"), job.get("source_dir"),
+        job.get("message"), job.get("error"),
         json.dumps(job.get("produced") or [], ensure_ascii=False),
         json.dumps(job.get("warnings") or [], ensure_ascii=False),
         job.get("duration_sec"), job.get("created_at", now_iso()),

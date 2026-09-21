@@ -6,6 +6,8 @@ import StatusBadge from '../components/StatusBadge.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import EmptyState from '../components/EmptyState.vue'
 import DataTable from '../components/DataTable.vue'
+import Modal from '../components/Modal.vue'
+import MarkSourcePicker from '../components/MarkSourcePicker.vue'
 import OriginRescueModal from '../components/OriginRescueModal.vue'
 import { getHealth, getStats, scanAll } from '../api/system'
 import { listJobs } from '../api/jobs'
@@ -13,14 +15,24 @@ import { useToast } from '../composables/useToast'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useJobStore } from '../composables/useJobStore'
 import { useScanRescue } from '../composables/useScanRescue'
+import { useScanOverride } from '../composables/useScanOverride'
 import { formatBytes, formatDateTime, formatDuration } from '../composables/useFormat'
-import type { Health, Stats, Job, ScanResult } from '../api/types'
+import type { Health, Stats, Job, ScanOptions, ScanResult } from '../api/types'
 
 const router = useRouter()
 const toast = useToast()
 const ws = useWebSocket()
 const jobStore = useJobStore()
 const rescue = useScanRescue()
+
+/**
+ * 手动扫描的「就这一次」原片处理方式。默认空串 = 各目录按自己的设置、再退回系统设置。
+ * 语义与复位规则见 useScanOverride。
+ */
+const scanOverride = useScanOverride()
+const { mark: scanMark, dir: scanDir, willDelete: scanWillDelete } = scanOverride
+/** 本次会删源文件时先拦一道确认 */
+const confirmDeleteScan = ref(false)
 
 const health = ref<Health | null>(null)
 const stats = ref<Stats | null>(null)
@@ -44,18 +56,33 @@ async function loadAll(): Promise<void> {
   }
 }
 
+/** 扫描入口：本次要删源文件时先拦一道确认，其余照直扫 */
+function askScan(): void {
+  if (scanWillDelete.value) {
+    confirmDeleteScan.value = true
+    return
+  }
+  void doScan()
+}
+
 async function doScan(): Promise<void> {
   scanning.value = true
+  // 取走本次覆盖：options 发给后端，text 留给提示语。
+  // 必须在 await 之前抓快照 —— 扫描期间用户可能又去改了下拉框
+  const snap = scanOverride.take()
   try {
-    const r = await scanAll()
+    const r = await scanAll(snap.options)
+    // 一次性覆盖用完即清，见 useScanOverride 的说明
+    if (snap.options) scanOverride.reset()
     // 任务数会变化，稍后由 WS 或直接刷新统计
     await loadAll()
     // 扫到「切片已不在的原片」时交给兜底流程：这种结果有明确的后续动作，
     // 不该只丢一句「已跳过」就完事——用户会以为工具不管它了
-    if (rescue.offer(r, rescanNow)) return
+    if (rescue.offer(r, () => rescanNow(snap.options))) return
     // 用后端原话汇报：它会把「跳过了 N 个已处理文件、为什么跳过」一并说清。
     // 前端另拼一句「发现 0 个视频」会把真正的原因盖掉，用户就无从判断了。
-    toast.success(r.message || `扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`)
+    const summary = r.message || `扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`
+    toast.success(scanOverride.annotate(summary, snap))
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '扫描失败')
   } finally {
@@ -63,11 +90,20 @@ async function doScan(): Promise<void> {
   }
 }
 
-/** 恢复原名之后再扫一遍。刻意不再走 offer，免得来回弹窗 */
-async function rescanNow(): Promise<ScanResult> {
-  const r = await scanAll()
+/**
+ * 恢复原名之后再扫一遍。刻意不再走 offer，免得来回弹窗。
+ * options 沿用发起这次动作时的取值，保证「一次点击」内部行为一致。
+ */
+async function rescanNow(options?: ScanOptions): Promise<ScanResult> {
+  const r = await scanAll(options)
   await loadAll()
   return r
+}
+
+/** 确认「本次会删源文件」之后再往下走 */
+async function confirmDeleteThenScan(): Promise<void> {
+  confirmDeleteScan.value = false
+  await doScan()
 }
 
 // 实时事件：任务或扫描变化时刷新统计卡片（不强制刷新最近任务，避免列表跳动）
@@ -122,10 +158,23 @@ const recentColumns = [
         <h1 class="page-title">概览</h1>
         <div class="page-subtitle">服务运行状态与近期任务一览</div>
       </div>
-      <button class="btn btn--primary" :disabled="scanning" @click="doScan">
-        <span v-if="scanning" class="spinner" />
-        {{ scanning ? '扫描中…' : '立即扫描' }}
-      </button>
+      <!--
+        手动扫描的一次性原片处理方式。默认「跟随各级设置」，选了就只作用于
+        这一次「立即扫描」，扫完自动复位（见 useScanOverride）。
+      -->
+      <div class="scan-head">
+        <MarkSourcePicker
+          v-model="scanMark"
+          v-model:source-dir="scanDir"
+          follow-label="本次跟随各级设置"
+          compact
+        />
+        <span v-if="scanMark" class="scan-flag">仅本次 · 扫完自动复位</span>
+        <button class="btn btn--primary" :disabled="scanning" @click="askScan">
+          <span v-if="scanning" class="spinner" />
+          {{ scanning ? '扫描中…' : '立即扫描' }}
+        </button>
+      </div>
     </div>
 
     <div v-if="loading && !health" class="card"><span class="spinner" /> 加载中…</div>
@@ -197,6 +246,21 @@ const recentColumns = [
     </template>
   </div>
 
+  <!-- 本次扫描会删源文件：不可逆，动手前必须先问一句 -->
+  <Modal v-model="confirmDeleteScan" title="确认删除源文件">
+    <p>
+      本次「立即扫描」入队的任务，会在切分成功后把原片
+      <strong class="danger-text">永久删除</strong>，无法恢复。
+    </p>
+    <p class="faint">
+      只影响这一次，扫完这个选择会自动复位；各监控目录的长期设置不受影响。
+    </p>
+    <template #footer>
+      <button class="btn" @click="confirmDeleteScan = false">取消</button>
+      <button class="btn btn--danger" @click="confirmDeleteThenScan">确认并扫描</button>
+    </template>
+  </Modal>
+
   <!-- 扫到「切片已不在的原片」时的动作入口 -->
   <OriginRescueModal
     v-model="rescue.state.open"
@@ -212,5 +276,23 @@ const recentColumns = [
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: var(--space-4);
+}
+.scan-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.scan-flag {
+  font-size: var(--font-size-xs);
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  white-space: nowrap;
+}
+.danger-text {
+  color: var(--color-danger);
 }
 </style>

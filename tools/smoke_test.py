@@ -299,8 +299,80 @@ def main() -> int:
         check("没有遗留问题", bool(report and not report["problems"]),
               str((report or {}).get("problems"))[:140])
 
+        # ---------------------------------------------------------- 原片处理三级设置
+        print("\n[8] 原片处理方式：三级设置")
+        status, cur = req("GET", "/api/settings")
+        check("设置里有 markSource 字段",
+              status == 200 and "markSource" in (cur or {}).get("split", {}),
+              str((cur or {}).get("split", {}).get("markSource")))
+        check("设置里有 sourceDir 字段",
+              "sourceDir" in (cur or {}).get("split", {}),
+              str((cur or {}).get("split", {}).get("sourceDir")))
+
+        # 一级 · 历史默认名 origin 要自动迁到新名字：那不是用户的刻意选择，
+        # 留着只会让老配置永远停在旧名字上
+        cur["split"]["sourceDir"] = "origin"
+        status, migrated = req("PUT", "/api/settings", cur)
+        check("历史归档目录名 origin 自动迁移",
+              (migrated or {}).get("split", {}).get("sourceDir")
+              == "resize-video-origin-file",
+              str((migrated or {}).get("split", {}).get("sourceDir")))
+
+        # 二级 · 给监控目录单独设一套
+        status, wp_move = req("PUT", "/api/watchpoints/%s" % wp_id,
+                              {"markSource": "move", "sourceDir": "wp-archive"})
+        check("监控目录存得下自己的原片处理方式",
+              status == 200 and (wp_move or {}).get("markSource") == "move"
+              and (wp_move or {}).get("sourceDir") == "wp-archive",
+              str(wp_move)[:160])
+
+        # 空串是「跟随系统」，必须原样存回去：补成具体值就再也升不了级了
+        status, wp_follow = req("PUT", "/api/watchpoints/%s" % wp_id,
+                                {"markSource": "", "sourceDir": ""})
+        check("留空表示跟随，原样存回空串",
+              status == 200 and (wp_follow or {}).get("markSource") == ""
+              and (wp_follow or {}).get("sourceDir") == "",
+              str(wp_follow)[:160])
+
+        # 三级 · 手动扫描时临时指定一次。用 move 跑完整条链路，最后看原片是不是
+        # 真的躺进了指定的归档子文件夹 —— 这同时证明了执行阶段用的是入队那一刻
+        # 的快照，而不是当时设置里的 rename
+        status, scan2 = req("POST", "/api/scan",
+                            {"markSource": "move", "sourceDir": "smoke-archive"})
+        check("手动扫描可以带本次指定的处理方式", status == 200, str(scan2)[:160])
+        check("又入队 1 个任务", bool(scan2 and scan2["queued"] == 1),
+              "queued=%s" % (scan2 or {}).get("queued"))
+
+        job2 = None
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            status, listing = req("GET", "/api/jobs?limit=5")
+            for item in (listing or {}).get("items", []):
+                if item["id"] != job["id"]:
+                    job2 = item
+                    break
+            if job2 and job2["status"] in ("success", "failed", "canceled"):
+                break
+            time.sleep(1)
+
+        check("第二次任务完成", bool(job2 and job2["status"] == "success"),
+              "status=%s error=%s" % ((job2 or {}).get("status"),
+                                      (job2 or {}).get("error")))
+        if job2:
+            check("任务快照记下了本次指定的处理方式",
+                  [job2["markSource"], job2["sourceDir"]]
+                  == ["move", "smoke-archive"],
+                  "markSource=%s sourceDir=%s"
+                  % (job2["markSource"], job2["sourceDir"]))
+        check("原片真的进了本次指定的归档子文件夹",
+              (INBOX / "smoke-archive" / "test_clip.mp4").is_file())
+        status, after = req("GET", "/api/settings")
+        check("临时指定没有改掉系统设置",
+              (after or {}).get("split", {}).get("markSource") == "rename",
+              str((after or {}).get("split", {}).get("markSource")))
+
         # ---------------------------------------------------------- 清理接口
-        print("\n[8] 任务记录清理")
+        print("\n[9] 任务记录清理")
         status, cleared = req("POST", "/api/jobs/clear",
                               {"statuses": ["success", "failed", "canceled"]})
         check("清理已完成任务返回 200", status == 200, str(cleared)[:120])

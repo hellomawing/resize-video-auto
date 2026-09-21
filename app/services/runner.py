@@ -154,7 +154,12 @@ def _run_job(job: dict) -> None:
         outdir = job_queue.resolve_outdir(src, settings)
         ffmpeg = engine.find_bin("ffmpeg")
         ffprobe = engine.find_bin("ffprobe")
-        mark_source = split.get("markSource") or "rename"
+        # 用任务上固化的快照（入队那一刻已按「本次手动 > 该目录设置 > 系统默认」
+        # 定好）。老任务没有这两个字段，回落到当前设置，行为与之前完全一致。
+        mark_source = (fresh.get("markSource") or split.get("markSource")
+                       or config.DEFAULT_MARK_SOURCE)
+        source_dir = (fresh.get("sourceDir")
+                      or config.normalize_source_dir(split.get("sourceDir")))
         delete_source = mark_source == "delete"
 
         try:
@@ -175,10 +180,9 @@ def _run_job(job: dict) -> None:
             on_log("切分方式   ：按时间，每片 %.0f 秒" % seg_seconds)
         on_log("切割模式   ：%s" % split.get("mode"))
         on_log("输出目录   ：%s" % outdir)
-        if delete_source:
-            on_log("原文件处理 ：切割成功后删除（危险操作）")
-        else:
-            on_log("原文件处理 ：%s" % mark_source)
+        on_log("原文件处理 ：%s%s" % (
+            _mark_text(mark_source, source_dir),
+            "　⚠️ 不可撤销" if delete_source else ""))
         on_log("ffmpeg     ：%s" % (ffmpeg or "未找到（将使用纯字节切割）"))
         on_log("-" * 60)
 
@@ -193,7 +197,7 @@ def _run_job(job: dict) -> None:
             keep_metadata=bool(split.get("keepMetadata", True)),
             overwrite=bool(split.get("overwrite", False)),
             mark_source_mode="none" if delete_source else mark_source,
-            source_dir=split.get("sourceDir") or "origin",
+            source_dir=source_dir,
             delete_source=delete_source,
             dry_run=False,
         )
@@ -243,6 +247,17 @@ def _run_job(job: dict) -> None:
         except Exception:
             pass
         bus.publish({"type": "job.updated", "job": db.get_job(job_id)})
+
+
+def _mark_text(mark_source: str, source_dir: str) -> str:
+    """把原片处理方式讲成人话。任务日志里直接显示，别让用户猜枚举值。"""
+    if mark_source == "move":
+        return "移动到 %s/ 子文件夹" % source_dir
+    return {
+        "rename": "重命名为「原名#origin.扩展名」，留在原文件夹",
+        "none": "不处理原片（原地保留，下次扫描可能被再次切分）",
+        "delete": "切分成功后删除原片",
+    }.get(mark_source, mark_source)
 
 
 def _json(payload) -> str:

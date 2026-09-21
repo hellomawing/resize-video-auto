@@ -69,7 +69,7 @@
     "outdirMode": "same",
     "outdir": "",
     "markSource": "rename",
-    "sourceDir": "origin",
+    "sourceDir": "resize-video-origin-file",
     "keepMetadata": true,
     "overwrite": false
   },
@@ -93,7 +93,11 @@
 - `split.bySize`：true=按大小切，false=按时间切（用 `seconds`）
 - `split.all`：true=不按大小筛选，所有视频都切
 - `split.outdirMode`：`same`（与源文件同目录）| `custom`（用 `outdir`）
-- `split.markSource`：`rename` | `move` | `none` | `delete`
+- `split.markSource`：切分成功后怎么处置原片，取值见下节。
+- `split.sourceDir`：`markSource: "move"` 时用的归档子目录名（**单层目录名**，
+  相对源文件所在目录，不存在会自动创建）。默认 `resize-video-origin-file`。
+  写入时会做规整：斜杠、`.`、`..` 会被处理掉；历史默认名 `origin`
+  会自动迁到新默认名。详见 [原片处理方式](#原片处理方式marksource)。
 - `watch.realtime`：实时监听（inotify）的**全局能力开关**（网络共享目录会自动退化为轮询）。
   注意这是全局开关，某个目录要不要用实时监听由它自己的 `scanMode` 决定，两者是「与」的关系。
 - `watch.settleSeconds`：文件稳定检测秒数——大小与修改时间连续这么多秒不变才入队
@@ -102,7 +106,77 @@
 
 ---
 
-## 3. 监控目录
+## 3. 原片处理方式（markSource）
+
+切分成功后原片怎么处置，共四个取值（与 `core/splitter.py` 的 `mark_source`
+参数一一对应）：
+
+| 值 | 行为 | 原片去哪 | 风险 |
+|---|---|---|---|
+| `rename` | 原片改名，加 `#origin` 后缀 | 留在原地 | 无。扫描器认得这个后缀，不会重切 |
+| `move` | 原片移到同级的归档子目录 | `<原目录>/<sourceDir>/` | 无。归档目录名会被扫描器整体排除 |
+| `none` | 不动原片 | 留在原地 | ⚠️ **下次扫描会把它当新视频再切一遍** |
+| `delete` | 切分成功后删除原片 | — | ⚠️ **不可逆**，无法恢复 |
+
+`sourceDir` 只在 `move` 下有实际意义，且必须是**单层目录名**（相对原文件所在目录，
+不存在会自动创建）。写入时的规整规则：
+
+- 只取最后一段：`origin/old` → `old`；反斜杠也当分隔符
+- `.` / `..` / 空值 → 退回默认名
+- 历史默认名 `origin`（不分大小写）→ 迁到新默认名 `resize-video-origin-file`
+
+`origin` 之所以要迁走：它只是早期版本的实现细节，不是用户的刻意选择，
+留着只会让老配置永远停在旧名字上。
+
+### 三级优先级
+
+这四选一可以在三个地方设，**前一级压过后一级**：
+
+| 级别 | 在哪设 | 字段 | 作用范围 |
+|---|---|---|---|
+| 1（最高） | 手动扫描时的请求体 | `ScanIn` | **只影响这一次**入队的任务，不落盘 |
+| 2 | 监控目录自己的设置 | `WatchPoint.markSource` / `.sourceDir` | 该目录扫出来的所有任务 |
+| 3（兜底） | 系统设置 | `split.markSource` / `.sourceDir` | 全局默认值 |
+
+**「跟随上级」用空串表示**，它不是一个缺省值：
+
+- `WatchPoint.markSource` / `.sourceDir` 为 `""` 表示「跟随系统设置」。
+  所以 `PUT /api/watchpoints/{id}` 传空串是一个**有意的取值**，不是「没传」；
+  想恢复成跟随就传 `""`（传 `null` 表示「不改这一项」，两者含义不同）。
+- `ScanIn` 里不传字段即表示跟随该目录、再退回系统设置。
+- 系统设置那一层没有上级可跟随，界面上不提供「跟随」选项。
+
+### 快照语义
+
+解析结果在**入队那一刻**定下来，写进任务行的 `markSource` / `sourceDir`，
+执行阶段直接用它，**不再回头读设置**。
+
+理由是任务可能在队列里等很久：中途改一次设置就让排在后面的任务换一套行为，
+会出现「同一个目录扫出来的两批任务处理方式不一样」这种没法解释的结果，
+而且事后翻任务也看不出它当时用的是哪条规则。所以：
+
+- **改设置只影响之后入队的任务**，已排队的不受影响。
+- `POST /api/jobs/{id}/retry` 同样沿用原任务的快照 —— 重试的是同一个文件，
+  用户要的是「把上次没做完的事做完」，而不是按现在的设置换一套行为。
+- 新增这两个字段之前入队的老任务，快照为 `null`，重试时会安全退回当时的设置。
+
+### 归档目录的排除
+
+扫描器要**整体排除**归档目录名，否则被 `move` 走的原片下次扫描时会被当成
+新视频再切一遍（这是防重切的关键一环）。
+
+排除时取的是**所有候选名的集合**：系统默认名 + 各监控目录自己用的名字 +
+本次手动指定的名字 + 历史默认名 `origin`（改名之前搬进去的文件还躺在那里）。
+之所以是集合而不是单个名字：归档目录能按监控目录分别设置，只排除一个名字的话，
+别处归档走的原片就会在另一个目录里被重切。
+
+> ⚠️ 判断方式是「路径里任意一段同名即算」，所以归档目录名**不能取成路径上已有的
+> 段名**（如 `vol1`、`1000`），否则会把整棵目录树都排除掉，
+> 表现为「扫描完说没有需要处理的视频」。默认名足够特别，改名前留意这一点。
+
+---
+
+## 4. 监控目录
 
 ```json
 {
@@ -112,6 +186,8 @@
   "scanMode": "realtime",
   "scanIntervalHours": 6,
   "scanTime": "03:00",
+  "markSource": "",
+  "sourceDir": "",
   "note": "相机导入目录",
   "createdAt": "2026-09-20T12:00:00+08:00",
   "lastScanAt": null,
@@ -119,6 +195,9 @@
   "videoCount": 0
 }
 ```
+
+- `markSource` / `sourceDir`：这个目录自己的原片处理方式，**空串 = 跟随系统设置**。
+  详见 [原片处理方式](#3-原片处理方式marksource)。
 
 ### 扫描方式 `scanMode`
 
@@ -155,13 +234,29 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/watchpoints` | 列表，返回 `[WatchPoint]` |
-| POST | `/api/watchpoints` | body `{path, recursive, scanMode, scanIntervalHours, scanTime, note}` |
+| POST | `/api/watchpoints` | body `{path, recursive, scanMode, scanIntervalHours, scanTime, markSource, sourceDir, note}` |
 | PUT | `/api/watchpoints/{id}` | 局部更新（上表除 `path`/`id` 外的字段均可） |
 | DELETE | `/api/watchpoints/{id}` | 删除（想让它别再自动扫请改 `scanMode`，不必删除） |
-| POST | `/api/watchpoints/{id}/scan` | **立即扫描一次**，返回 `ScanResult`（见下） |
+| POST | `/api/watchpoints/{id}/scan` | **立即扫描一次**，返回 `ScanResult`（见下），可带 `ScanIn` |
 
-`PUT` 会回读一次再返回，因此响应里的 `scanIntervalHours` / `scanTime`
-一定是纠正后的**实际生效值**，前端直接用它刷新界面即可。
+`PUT` 会回读一次再返回，因此响应里的 `scanIntervalHours` / `scanTime` /
+`sourceDir` 一定是纠正后的**实际生效值**，前端直接用它刷新界面即可。
+
+### 扫描请求体 `ScanIn`
+
+两个 `scan` 接口共用，**整体可选**（不传就等于全部跟随）：
+
+```json
+{ "markSource": "move", "sourceDir": "归档" }
+```
+
+| 字段 | 类型 | 缺省时 |
+|---|---|---|
+| `markSource` | `rename` \| `move` \| `none` \| `delete` | 跟随该监控目录，再退回系统设置 |
+| `sourceDir` | string | 同上 |
+
+这是「**就这一次**」的临时指定：只作用于本次扫描入队的任务，不写进任何配置文件，
+也不改变监控目录或系统设置。详见 [原片处理方式](#3-原片处理方式marksource)。
 
 ### 扫描结果 `ScanResult`
 
@@ -205,12 +300,14 @@
 
 ### POST /api/scan
 扫描**全部**监控目录并入队（同样不看 `scanMode`），返回 `ScanResult`（字段同上，
-数值为各目录合计）。一条都没入队但确实看到了已处理的文件时，`message` 会说明
-原因，而不是只回一句「0 个视频」。
+数值为各目录合计）。请求体可选，为 `ScanIn` —— 不传时各目录按自己的设置处理原片。
+
+一条都没入队但确实看到了已处理的文件时，`message` 会说明原因，
+而不是只回一句「0 个视频」。
 
 ---
 
-## 4. 定时任务
+## 5. 定时任务
 
 ```json
 {
@@ -261,6 +358,8 @@
   "outdir": "/vol1/media/inbox",
   "trigger": "watch",
   "watchpointId": "wp_ab12cd34",
+  "markSource": "rename",
+  "sourceDir": "resize-video-origin-file",
   "message": "正在切分：第 2/3 段",
   "error": null,
   "produced": [ { "name": "DJI_0001#1.MP4", "size": 2147483648 } ],

@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import config, db
-from ..models import ClearJobsIn, ScanResult
+from ..models import ClearJobsIn, ScanIn, ScanResult
 from ..services import queue as job_queue
 from ..services import runner, scanner
 
@@ -36,9 +36,16 @@ def clear_jobs(payload: ClearJobsIn) -> dict:
 
 
 @router.post("/scan", response_model=ScanResult)
-def scan_all() -> ScanResult:
-    """立即扫描全部启用的监控目录。"""
-    result = scanner.scan_all(trigger="manual")
+def scan_all(payload: ScanIn | None = None) -> ScanResult:
+    """
+    立即扫描全部监控目录。
+
+    body 可选：用来临时指定「这一次」原片怎么处理（`markSource` / `sourceDir`）。
+    不传就是每个目录各按自己的设置，再退回系统默认值。它**只作用于本次入队的
+    任务，不写入任何配置** —— 想改长期行为请去「设置」或「监控目录」页。
+    """
+    override = payload.model_dump(by_alias=True) if payload else None
+    result = scanner.scan_all(trigger="manual", mark_override=override)
     return ScanResult.from_engine(result)
 
 

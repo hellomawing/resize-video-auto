@@ -76,6 +76,12 @@ class BrowseOut(CamelModel):
 
 # ---------------------------------------------------------------- 设置
 
+# 原片处理方式，取值与 app/config.py 的 MARK_SOURCES 一致，改一处要同步另一处。
+#   rename 加 #origin 后缀留在原处 | move 移到归档子目录
+#   none   不处理原片            | delete 切分成功后删除原片
+MarkSource = Literal["rename", "move", "none", "delete"]
+
+
 class SplitSettings(CamelModel):
     mode: Literal["auto", "copy", "bytes"] = "auto"
     by_size: bool = True
@@ -86,8 +92,8 @@ class SplitSettings(CamelModel):
     recursive: bool = True
     outdir_mode: Literal["same", "custom"] = "same"
     outdir: str = ""
-    mark_source: Literal["rename", "move", "none", "delete"] = "rename"
-    source_dir: str = "origin"
+    mark_source: MarkSource = "rename"
+    source_dir: str = "resize-video-origin-file"
     keep_metadata: bool = True
     overwrite: bool = False
     debug: bool = False
@@ -128,6 +134,10 @@ class WatchPoint(CamelModel):
     scan_mode: ScanMode = "realtime"
     scan_interval_hours: int = 6
     scan_time: str = "03:00"
+    # 原片处理方式。空串 = 跟随系统设置 —— 这是有意的「未设置」状态，
+    # 不是缺省值，解析优先级见 config.resolve_mark_policy
+    mark_source: str = ""
+    source_dir: str = ""
     note: str = ""
     created_at: str = ""
     last_scan_at: Optional[str] = None
@@ -142,6 +152,8 @@ class WatchPointCreate(CamelModel):
     scan_mode: ScanMode = "realtime"
     scan_interval_hours: int = 6
     scan_time: str = "03:00"
+    mark_source: str = ""
+    source_dir: str = ""
     note: str = ""
 
 
@@ -150,6 +162,9 @@ class WatchPointUpdate(CamelModel):
     scan_mode: Optional[ScanMode] = None
     scan_interval_hours: Optional[int] = None
     scan_time: Optional[str] = None
+    # 传空串表示「改回跟随系统设置」，所以这两个字段不能用 None 表达「清空」
+    mark_source: Optional[str] = None
+    source_dir: Optional[str] = None
     note: Optional[str] = None
 
 
@@ -202,6 +217,16 @@ class ScanResult(CamelModel):
             resettable_total=result.get("resettableTotal", 0),
             resettable_dirs=result.get("resettableDirs") or [],
             message=result.get("message", ""))
+
+
+class ScanIn(CamelModel):
+    """手动扫描时的临时覆盖参数。
+
+    字段留空（或整个请求体不传）= 跟随该监控目录 / 系统设置。它刻意**不落盘**：
+    表达的是「就这一次按这个方式处理」，改的是一次行为，不是配置。
+    """
+    mark_source: Optional[MarkSource] = None
+    source_dir: Optional[str] = None
 
 
 # ---------------------------------------------------------------- 定时任务

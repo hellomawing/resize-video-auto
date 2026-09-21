@@ -3,10 +3,11 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import Toggle from '../components/Toggle.vue'
 import Modal from '../components/Modal.vue'
 import TagInput from '../components/TagInput.vue'
+import MarkSourcePicker from '../components/MarkSourcePicker.vue'
 import { getSettings, updateSettings } from '../api/settings'
 import { useToast } from '../composables/useToast'
 import { useWebSocket } from '../composables/useWebSocket'
-import type { Settings, SplitMode, OutdirMode, MarkSource } from '../api/types'
+import type { Settings, SplitMode, OutdirMode } from '../api/types'
 
 const toast = useToast()
 const ws = useWebSocket()
@@ -22,12 +23,6 @@ const MODE_OPTIONS: { value: SplitMode; label: string }[] = [
   { value: 'auto', label: '自动（优先 copy，否则字节切）' },
   { value: 'copy', label: '流拷贝（不重新编码）' },
   { value: 'bytes', label: '纯字节切割' },
-]
-const MARK_OPTIONS: { value: MarkSource; label: string }[] = [
-  { value: 'rename', label: '重命名源文件' },
-  { value: 'move', label: '移动到子目录' },
-  { value: 'none', label: '不处理源文件' },
-  { value: 'delete', label: '删除源文件（危险）' },
 ]
 const OUTDIR_OPTIONS: { value: OutdirMode; label: string }[] = [
   { value: 'same', label: '与源文件同目录' },
@@ -154,13 +149,16 @@ function save(): void {
         </div>
 
         <div class="field">
-          <label class="field-label">源文件处理方式</label>
-          <select v-model="form.split.markSource" class="select">
-            <option v-for="o in MARK_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-          </select>
-          <div v-if="form.split.markSource === 'move'" class="field">
-            <label class="field-label">移动到的子目录名</label>
-            <input v-model="form.split.sourceDir" class="input" placeholder="如 origin" />
+          <label class="field-label">源文件处理方式（默认值）</label>
+          <MarkSourcePicker
+            v-model="form.split.markSource"
+            v-model:source-dir="form.split.sourceDir"
+            hide-follow
+          />
+          <div class="field-hint">
+            这里设的是全局默认值：每个监控目录可以在「监控目录」页单独覆盖，
+            手动扫描时也能只改这一次。按「本次 &gt; 目录 &gt; 这里」的顺序生效，
+            且以任务入队那一刻为准（已排队的任务不受之后改动影响）。
           </div>
         </div>
 

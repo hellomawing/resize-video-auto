@@ -109,7 +109,23 @@ def verify_deletable(origin: Path, parts, size: int, total: int, ffprobe) -> dic
     return res
 
 
-def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin",
+def _dir_names(source_dir) -> set:
+    """
+    归档目录名归一化成集合。
+
+    既能吃单个字符串（命令行与老调用的写法），也能吃一组名字（服务端会把
+    系统默认名、各监控目录用的名字、历史默认名一起传进来）。用集合是必须的：
+    归档目录名可以按监控目录分别设置，只认一个名字的话，别处归档走的原片
+    就会在撤销页配不上对，等于凭空消失。
+    """
+    if not source_dir:
+        return set()
+    if isinstance(source_dir, str):
+        return {source_dir}
+    return {str(x) for x in source_dir if x}
+
+
+def scan_groups(folder: Path, recursive: bool = True, source_dir="origin",
                 ffprobe=None) -> tuple:
     """
     找出所有「切片 + 原片」组合，返回 (groups, orphans, origin_only)。
@@ -119,7 +135,10 @@ def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin"
     * origin_only 有 `#origin` 原片却一个切片都没有：已经撤销不动了，
                   但它仍然必须被报出去，否则这个文件在界面上彻底隐身
                   （扫描跳过它、撤销页又看不到它，只能 SSH 手工改名）
+
+    source_dir 可以是单个名字，也可以是一组名字，见 _dir_names。
     """
+    archive_dirs = _dir_names(source_dir)
     base_iter = folder.rglob("*") if recursive else folder.glob("*")
     files = []
     for p in base_iter:
@@ -145,8 +164,8 @@ def scan_groups(folder: Path, recursive: bool = True, source_dir: str = "origin"
             renamed.add(key)
             continue
 
-        # 2) 归档目录形式：origin/原名.ext
-        if p.parent.name == source_dir:
+        # 2) 归档目录形式：<归档目录>/原名.ext
+        if p.parent.name in archive_dirs:
             key = (stem, suffix)
             originals.setdefault(key, p)
             continue
@@ -350,7 +369,7 @@ def restore_origin(group) -> str:
     return "原片已恢复为 %s" % target.name
 
 
-def apply_undo(folder: Path, *, recursive: bool = True, source_dir: str = "origin",
+def apply_undo(folder: Path, *, recursive: bool = True, source_dir="origin",
                delete_slices: bool = True, restore: bool = True,
                restore_origin_only: bool = False,
                trash: bool = True, ffprobe=None) -> dict:
