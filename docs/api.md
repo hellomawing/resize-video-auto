@@ -169,10 +169,13 @@
 {
   "found": 0, "queued": 0, "skipped": 0, "waiting": 0,
   "ignored": [
-    { "name": "DJI_0001#origin.MP4", "reason": "是本工具切出来的切片或已标记的原片" }
+    { "name": "DJI_0001#origin.MP4", "reason": "是已经切分过的原片",
+      "kind": "origin", "resettable": true }
   ],
   "ignoredTotal": 1,
-  "message": "扫描完成：没有需要处理的新视频。目录里有 1 个视频文件被跳过（…）"
+  "resettableTotal": 1,
+  "resettableDirs": [ { "path": "/vol1/media/inbox", "recursive": true } ],
+  "message": "扫描完成：没有需要处理的新视频。目录里有 1 个原片的分割结果已经不在（切片被删除或移走），可以重新分割。"
 }
 ```
 
@@ -180,7 +183,13 @@
 - `skipped`：进了候选、又被过滤规则拒掉的数量。
 - `waiting`：还在拷贝中、需要等文件稳定的数量。
 - `ignored` / `ignoredTotal`：**收集阶段**就被跳过的文件（本工具的切片、`#origin`
-  原片、归档目录里的）。明细最多 50 条，总数以 `ignoredTotal` 为准。
+  原片、归档目录里的）。明细最多 50 条，总数以 `ignoredTotal` 为准；
+  **可重新分割的项会排在明细最前面**，免得被几十个切片名挤出视野。
+- `ignored[].kind`：`slice`（切片）或 `origin`（已切分过的原片）。
+- `ignored[].resettable`：**切片已不在**的原片。它挂着 `#origin` 看着像
+  「已完成」，其实这次切分的结果已经没了（切片被删或搬走），恢复原名就能重切。
+- `resettableTotal` / `resettableDirs`：这类原片的总数与所在目录。
+  前端据此逐目录调用 `/api/undo/apply`（`restoreOriginOnly: true`）一键恢复。
 - `message`：后端生成的中文总结，**前端直接展示，不要自己另拼文案**——
   它会说清「跳过了几个、为什么跳过、接下来该怎么办」，这正是早期版本只回一句
   「没有发现需要处理的视频」时最缺的信息。
@@ -188,6 +197,11 @@
 > **为什么要区分 `skipped` 和 `ignored`**：两者都表现为「文件没被处理」，
 > 但 `ignored` 是**刻意保护**的结果——不跳过就会把刚切出来的原片或切片再切一遍，
 > 数据会废掉。把它们如实报出来，用户才分得清「真的没有视频」和「被有意跳过了」。
+>
+> **为什么还要再分一层 `kind` / `resettable`**：保护机制只看 `#origin` 后缀，
+> 不看切片还在不在，于是把两种相反的状态混成了一句「已跳过」——
+> 切片还在 = 这次切分是完整的；切片没了 = 切分结果丢了、原片可以重切。
+> 后者是用户最需要知道、也最容易误判的情况，必须单独标出来。
 
 ### POST /api/scan
 扫描**全部**监控目录并入队（同样不看 `scanMode`），返回 `ScanResult`（字段同上，
@@ -327,7 +341,9 @@ body：
   恢复原名等于把它们变回待处理的普通文件，`realtime` 模式下会**立刻被重新分割一次**，
   所以必须由用户明确要求（界面上是单独的「恢复原名」按钮，带二次确认）。
   只想恢复原片名、不动别的，传
-  `{ "deleteSlices": false, "restoreOrigin": false, "restoreOriginOnly": true }`。
+  `{ "deleteSlices": false, "restoreOrigin": false, "restoreOriginOnly": true }`
+  —— 扫描结果里的 `resettableDirs` 正是为它准备的：前端拿到后逐目录调用本接口，
+  再把扫描跑一遍，就闭环了「发现 → 恢复 → 重新分割」。
 - 目标位置已有同名文件时**拒绝覆盖**，失败原因会如实写进 `problems`。
 
 安全约定：**校验不通过的组一律不动**，原片改名也照做（改名非破坏性）。

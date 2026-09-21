@@ -6,13 +6,16 @@ import Modal from '../components/Modal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import DirPicker from '../components/DirPicker.vue'
 import ScanModePicker from '../components/ScanModePicker.vue'
+import OriginRescueModal from '../components/OriginRescueModal.vue'
 import { listWatchpoints, createWatchpoint, updateWatchpoint, deleteWatchpoint, scanWatchpoint } from '../api/watchpoints'
 import { getSettings } from '../api/settings'
 import { useToast } from '../composables/useToast'
+import { useScanRescue } from '../composables/useScanRescue'
 import { formatDateTime } from '../composables/useFormat'
-import type { ScanMode, WatchPoint, WatchPointCreate, Settings } from '../api/types'
+import type { ScanMode, ScanResult, WatchPoint, WatchPointCreate, Settings } from '../api/types'
 
 const toast = useToast()
+const rescue = useScanRescue()
 
 interface FormState {
   path: string
@@ -165,14 +168,23 @@ async function scanOne(wp: WatchPoint): Promise<void> {
   scanningId.value = wp.id
   try {
     const r = await scanWatchpoint(wp.id)
+    await load()
+    // 扫到「切片已不在的原片」时交给兜底流程，见 useScanRescue
+    if (rescue.offer(r, () => rescanOne(wp))) return
     // 用后端原话汇报：它会把「跳过 N 个」「M 个还在拷贝中需等待」一并说清
     toast.success(r.message || `扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`)
-    await load()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '扫描失败')
   } finally {
     scanningId.value = null
   }
+}
+
+/** 恢复原名之后再扫一遍。刻意不再走 offer，免得来回弹窗 */
+async function rescanOne(wp: WatchPoint): Promise<ScanResult> {
+  const r = await scanWatchpoint(wp.id)
+  await load()
+  return r
 }
 
 function askDelete(wp: WatchPoint): void {
@@ -329,6 +341,15 @@ const columns = [
         <button class="btn btn--danger" @click="confirmDelete">移除</button>
       </template>
     </Modal>
+
+    <!-- 扫到「切片已不在的原片」时的动作入口 -->
+    <OriginRescueModal
+      v-model="rescue.state.open"
+      :total="rescue.state.total"
+      :names="rescue.state.names"
+      :busy="rescue.state.busy"
+      @confirm="rescue.confirm"
+    />
   </div>
 </template>
 

@@ -6,18 +6,21 @@ import StatusBadge from '../components/StatusBadge.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import EmptyState from '../components/EmptyState.vue'
 import DataTable from '../components/DataTable.vue'
+import OriginRescueModal from '../components/OriginRescueModal.vue'
 import { getHealth, getStats, scanAll } from '../api/system'
 import { listJobs } from '../api/jobs'
 import { useToast } from '../composables/useToast'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useJobStore } from '../composables/useJobStore'
+import { useScanRescue } from '../composables/useScanRescue'
 import { formatBytes, formatDateTime, formatDuration } from '../composables/useFormat'
-import type { Health, Stats, Job } from '../api/types'
+import type { Health, Stats, Job, ScanResult } from '../api/types'
 
 const router = useRouter()
 const toast = useToast()
 const ws = useWebSocket()
 const jobStore = useJobStore()
+const rescue = useScanRescue()
 
 const health = ref<Health | null>(null)
 const stats = ref<Stats | null>(null)
@@ -45,16 +48,26 @@ async function doScan(): Promise<void> {
   scanning.value = true
   try {
     const r = await scanAll()
+    // 任务数会变化，稍后由 WS 或直接刷新统计
+    await loadAll()
+    // 扫到「切片已不在的原片」时交给兜底流程：这种结果有明确的后续动作，
+    // 不该只丢一句「已跳过」就完事——用户会以为工具不管它了
+    if (rescue.offer(r, rescanNow)) return
     // 用后端原话汇报：它会把「跳过了 N 个已处理文件、为什么跳过」一并说清。
     // 前端另拼一句「发现 0 个视频」会把真正的原因盖掉，用户就无从判断了。
     toast.success(r.message || `扫描完成：发现 ${r.found} 个视频，入队 ${r.queued} 个`)
-    // 任务数会变化，稍后由 WS 或直接刷新统计
-    await loadAll()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '扫描失败')
   } finally {
     scanning.value = false
   }
+}
+
+/** 恢复原名之后再扫一遍。刻意不再走 offer，免得来回弹窗 */
+async function rescanNow(): Promise<ScanResult> {
+  const r = await scanAll()
+  await loadAll()
+  return r
 }
 
 // 实时事件：任务或扫描变化时刷新统计卡片（不强制刷新最近任务，避免列表跳动）
@@ -183,6 +196,15 @@ const recentColumns = [
       </div>
     </template>
   </div>
+
+  <!-- 扫到「切片已不在的原片」时的动作入口 -->
+  <OriginRescueModal
+    v-model="rescue.state.open"
+    :total="rescue.state.total"
+    :names="rescue.state.names"
+    :busy="rescue.state.busy"
+    @confirm="rescue.confirm"
+  />
 </template>
 
 <style scoped>

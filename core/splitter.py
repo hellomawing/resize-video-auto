@@ -923,9 +923,53 @@ def mark_source(src: Path, mode: str, source_dir_name: str) -> str:
 
 # ---------------------------------------------------------------- 文件收集
 
+_OWN_PRODUCT_RE = re.compile(r"#(?P<kind>\d+|origin)$", re.IGNORECASE)
+
+# 跳过原因的文案。放在这里是为了让「切片」和「原片」分得开：
+# 以前统称「切片或已标记的原片」，用户看不出跳过的是哪一种。
+SKIP_REASON = {
+    "slice": "是本工具切出来的切片",
+    "origin": "是已经切分过的原片",
+}
+
+
+def classify_own_product(path: Path) -> str | None:
+    """
+    归类本工具自己产生的文件：
+
+        "slice"  -> xxx#1.MP4、xxx#12.MP4   切片，切分的结果
+        "origin" -> xxx#origin.MP4         切完后被改名的原片
+        None     -> 不是本工具的产物
+
+    为什么要区分这两种：它们的含义正好相反——切片是「结果」，#origin 是
+    「喂给结果的那份素材」。只回答「是不是我的产物」不足以判断目录状态：
+    切片在 = 这次切分是完整的；切片没了而 #origin 还在 = 结果被删了，
+    这个原片其实可以重新切一遍。大小写不敏感（SMB/Samba 上 #origin 可能变成
+    #ORIGIN）。
+    """
+    m = _OWN_PRODUCT_RE.search(path.stem)
+    if not m:
+        return None
+    return "origin" if m.group("kind").lower() == "origin" else "slice"
+
+
+def product_base(path: Path) -> tuple[str, str] | None:
+    """
+    取产物对应的「原名 + 扩展名」，用来把切片和它的原片对上号：
+    xxx#1.MP4 和 xxx#origin.MP4 都得到 ("xxx", ".MP4")。不是产物则返回 None。
+    """
+    kind = classify_own_product(path)
+    if kind is None:
+        return None
+    stem = path.stem
+    if kind == "origin":
+        return stem[: -len("#origin")], path.suffix
+    return stem[: stem.rindex("#")], path.suffix
+
+
 def is_slice_or_origin(path: Path) -> bool:
     """判断是不是本工具自己产生的文件（切片 #1 / 已标记的原片 #origin）。"""
-    return bool(re.search(r"#(?:\d+|origin)$", path.stem, re.IGNORECASE))
+    return classify_own_product(path) is not None
 
 
 def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
@@ -952,9 +996,12 @@ def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
             try:
                 if not p.is_file() or p.suffix.lower() not in exts:
                     continue
-                if is_slice_or_origin(p):
+                kind = classify_own_product(p)
+                if kind:
+                    # 报出具体是哪一种：上层要据此判断「切片还在不在」，
+                    # 光知道「是我的产物」判断不了目录当前是什么状态
                     if on_skip:
-                        on_skip(p, "是本工具切出来的切片或已标记的原片")
+                        on_skip(p, SKIP_REASON[kind])
                     continue
                 if any(part in skip_dirs for part in p.parts):
                     if on_skip:

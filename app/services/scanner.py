@@ -152,6 +152,11 @@ def consider_file(path, spec: dict, trigger: str,
 
 # ---------------------------------------------------------------- 目录扫描
 
+def _summarize_counts(counter) -> str:
+    """把「原因 -> 个数」讲成一句人话，如「2 个是本工具切出来的切片」。"""
+    return "，".join("%d 个%s" % (n, reason) for reason, n in counter.most_common())
+
+
 def summarize_ignored(ignored: list) -> str:
     """
     把被跳过的文件按原因归类成一句人话。
@@ -159,8 +164,94 @@ def summarize_ignored(ignored: list) -> str:
     逐个列文件名只会变成噪音（一个切过 20 段的视频就有 20 个切片），
     用户真正需要知道的是「跳过了几类东西、各多少个」。
     """
-    counter = Counter(item["reason"] for item in ignored)
-    return "，".join("%d 个%s" % (n, reason) for reason, n in counter.most_common())
+    return _summarize_counts(Counter(item["reason"] for item in ignored))
+
+
+def _analyze_skips(raw_skips: list) -> dict:
+    """
+    把收集阶段记下的「看到了但按规矩不处理」的产物分类。
+
+    重点是把**切片已不在的原片**单独挑出来：目录里躺着一个 `#origin`，
+    看着像「已经处理完了」，但如果它的切片被删掉或搬走了，这次切分的
+    结果其实已经没了 —— 那个原片是**可以重新分割**的。以前它和普通跳过
+    共用一句「是本工具切出来的切片或已标记的原片」，用户根本看不出
+    「这个还能救」，只能靠猜。分类必须在整个目录遍历完之后做：判断切片
+    在不在，需要先看全所有文件。
+
+    返回：detail(明细，可重新分割的排在前面) / total / resettable /
+    dirs(含孤立原片的目录，去重) / otherReasons(其余跳过的原因计数)
+    """
+    # 先把所有切片的「原名+扩展名」记下来，这是判断原片有没有配对的依据
+    slice_keys = set()
+    for p, _ in raw_skips:
+        if engine.classify_own_product(p) == "slice":
+            key = engine.product_base(p)
+            if key:
+                slice_keys.add(key)
+
+    resettable_items, other_items, dirs = [], [], []
+    other_reasons = Counter()
+
+    for p, reason in raw_skips:
+        kind = engine.classify_own_product(p) or ""
+        key = engine.product_base(p)
+        alone = (kind == "origin" and key is not None
+                 and key not in slice_keys)
+        item = {"name": p.name, "reason": reason, "kind": kind,
+                "resettable": alone}
+        if alone:
+            parent = str(p.parent)
+            if parent not in dirs:
+                dirs.append(parent)
+            resettable_items.append(item)
+        else:
+            other_items.append(item)
+            other_reasons[reason] += 1
+
+    # 明细封顶 50 条时，「可以重新分割」的必须排在前面 ——
+    # 它们等着用户拿主意，被一堆切片名挤出视野就等于没提示
+    return {
+        "detail": (resettable_items + other_items)[:_MAX_IGNORED],
+        "total": len(raw_skips),
+        "resettable": len(resettable_items),
+        "dirs": dirs,
+        "otherReasons": other_reasons,
+    }
+
+
+def _skip_notes(info: dict) -> str:
+    """把「跳过了什么」讲清楚，尤其是「有能补救的」这件事。"""
+    notes = []
+    if info["resettable"]:
+        notes.append("目录里有 %d 个原片的分割结果已经不在（切片被删除或移走），"
+                     "可以重新分割" % info["resettable"])
+    others = info["total"] - info["resettable"]
+    if others:
+        detail = _summarize_counts(info["otherReasons"])
+        notes.append("另有 %d 个是已切分完成的产物，已跳过%s"
+                     % (others, "（%s）" % detail if detail else ""))
+    return "；".join(notes)
+
+
+def _scan_message(found: int, queued: int, waiting: int, skipped: int,
+                  info: dict) -> str:
+    """
+    把一次扫描的结果讲成一句人话。
+
+    最容易被带偏的是「一个都没入队、目录里却有视频」：只报「0 个视频」
+    等于什么都没说，用户没法判断是没扫到、被跳过了、还是能救回来。
+    """
+    if found:
+        head = "扫描完成：%d 个视频，入队 %d 个" % (found, queued)
+        if waiting:
+            head += "，%d 个还在拷贝中需等待" % waiting
+        if skipped:
+            head += "，跳过 %d 个" % skipped
+    else:
+        head = "扫描完成：没有需要处理的新视频"
+
+    notes = _skip_notes(info)
+    return head + "。" + notes + "。" if notes else head
 
 
 def scan_paths(paths, trigger: str, watchpoint_id: str = None,
@@ -179,11 +270,12 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
 
     if not valid_dirs:
         return {"found": 0, "queued": 0, "skipped": 0, "waiting": 0,
+                "ignored": [], "ignoredTotal": 0,
+                "resettableTotal": 0, "resettableDirs": [],
                 "message": "没有可扫描的目录（路径不存在或不是文件夹）",
                 "details": []}
 
-    ignored: list = []
-    ignored_total = 0
+    raw_skips: list = []
 
     def _note_skip(path, reason):
         """
@@ -191,11 +283,10 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
 
         没有这一步，收集阶段被丢掉的文件连个数都不剩，用户看到
         「没有发现需要处理的视频」时无从判断是真没有还是被跳过了。
+        这里只登记，分类留到遍历结束后统一做——判断一个原片的切片
+        还在不在，得先看全整个目录。
         """
-        nonlocal ignored_total
-        ignored_total += 1
-        if len(ignored) < _MAX_IGNORED:
-            ignored.append({"name": Path(path).name, "reason": reason})
+        raw_skips.append((Path(path), reason))
 
     files = engine.collect_files(valid_dirs, spec["exts"], spec["recursive"],
                                 {spec["source_dir"]}, on_skip=_note_skip)
@@ -214,26 +305,17 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
 
     tracker.prune()
 
-    if files:
-        message = "扫描完成：%d 个视频，入队 %d 个" % (len(files), queued)
-        if waiting:
-            message += "，%d 个还在拷贝中需等待" % waiting
-        if skipped:
-            message += "，跳过 %d 个" % skipped
-        if ignored_total:
-            message += "；另有 %d 个已处理过的文件被跳过（%s）" % (
-                ignored_total, summarize_ignored(ignored))
-    elif ignored_total:
-        message = ("扫描完成：没有需要处理的新视频。目录里有 %d 个视频文件被跳过（%s）——"
-                   "跳过是为了防止把自己切出来的半成品再切一遍。"
-                   "想把原片重新切一次，去「撤销分割」页恢复它的原名。"
-                   % (ignored_total, summarize_ignored(ignored)))
-    else:
-        message = "扫描完成：没有发现需要处理的视频"
+    info = _analyze_skips(raw_skips)
 
     return {"found": len(files), "queued": queued, "skipped": skipped,
-            "waiting": waiting, "message": message,
-            "ignored": ignored, "ignoredTotal": ignored_total,
+            "waiting": waiting,
+            "message": _scan_message(len(files), queued, waiting, skipped, info),
+            "ignored": info["detail"], "ignoredTotal": info["total"],
+            "resettableTotal": info["resettable"],
+            # 前端拿着目录列表逐目录去恢复；recursive 沿用本次扫描的范围，
+            # 免得恢复时漏掉子目录里的原片
+            "resettableDirs": [{"path": d, "recursive": spec["recursive"]}
+                               for d in info["dirs"]],
             "details": sorted(set(details))[:5]}
 
 
@@ -265,31 +347,38 @@ def scan_all(trigger: str = "manual", watchpoint_ids=None) -> dict:
         watchpoints = [w for w in watchpoints if w.get("id") in wanted]
 
     total = {"found": 0, "queued": 0, "skipped": 0, "waiting": 0,
-             "ignored": [], "ignoredTotal": 0, "details": []}
+             "ignored": [], "ignoredTotal": 0,
+             "resettableTotal": 0, "resettableDirs": [], "details": []}
     for wp in watchpoints:
         r = scan_watchpoint(wp, trigger)
-        for key in ("found", "queued", "skipped", "waiting", "ignoredTotal"):
+        for key in ("found", "queued", "skipped", "waiting",
+                    "ignoredTotal", "resettableTotal"):
             total[key] += r.get(key, 0)
         total["ignored"].extend(r.get("ignored") or [])
+        total["resettableDirs"].extend(r.get("resettableDirs") or [])
         total["details"].extend(r.get("details") or [])
     total["ignored"] = total["ignored"][:_MAX_IGNORED]
 
     if not watchpoints:
         total["message"] = "还没有配置监控目录，请先去「监控目录」页面添加"
-    elif total["found"]:
-        total["message"] = "扫描完成：%d 个目录，%d 个视频，入队 %d 个" % (
+        return total
+
+    if total["found"]:
+        head = "扫描完成：%d 个目录，%d 个视频，入队 %d 个" % (
             len(watchpoints), total["found"], total["queued"])
         if total["waiting"]:
-            total["message"] += "，%d 个还在拷贝中需等待" % total["waiting"]
-        if total["ignoredTotal"]:
-            total["message"] += "；另有 %d 个已处理过的文件被跳过" % total["ignoredTotal"]
-    elif total["ignoredTotal"]:
-        # 一条都没入队，但确实看到了视频文件 —— 必须说清楚为什么没动它，
-        # 否则用户只会看到「0 个视频」，然后开始怀疑扫描坏了
-        total["message"] = ("扫描完成：%d 个目录都没有需要处理的新视频，"
-                            "但有 %d 个视频文件被跳过（%s）"
-                            % (len(watchpoints), total["ignoredTotal"],
-                               summarize_ignored(total["ignored"])))
+            head += "，%d 个还在拷贝中需等待" % total["waiting"]
     else:
-        total["message"] = "扫描完成：%d 个目录都没有发现需要处理的视频" % len(watchpoints)
+        # 一条都没入队，但确实看到了视频 —— 必须说清楚为什么没动它，
+        # 否则用户只会看到「0 个视频」，然后开始怀疑扫描坏了
+        head = "扫描完成：%d 个目录都没有需要处理的新视频" % len(watchpoints)
+
+    # 跨目录汇总时不再逐条列原因（会太长），只讲两件最重要的事：
+    # 有没有能补救的、以及有多少是正常跳过
+    notes = _skip_notes({
+        "total": total["ignoredTotal"],
+        "resettable": total["resettableTotal"],
+        "otherReasons": Counter(),
+    })
+    total["message"] = head + "。" + notes + "。" if notes else head
     return total

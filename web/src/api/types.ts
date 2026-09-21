@@ -120,6 +120,16 @@ export interface WatchPointCreate {
 export interface IgnoredFile {
   name: string
   reason: string
+  /** 'slice' 切片 / 'origin' 已切分过的原片 */
+  kind: string
+  /** 切片已不在的原片 —— 恢复原名就能重新分割 */
+  resettable: boolean
+}
+
+/** 含「切片已不在的原片」的目录，前端据此逐目录恢复 */
+export interface ResettableDir {
+  path: string
+  recursive: boolean
 }
 
 export interface ScanResult {
@@ -132,6 +142,10 @@ export interface ScanResult {
   ignored: IgnoredFile[]
   /** 被跳过的总数。明细可能被截断，要显示总数时以这个为准 */
   ignoredTotal: number
+  /** 其中「切片已不在、可以重新分割」的原片数量 */
+  resettableTotal: number
+  /** 这些原片所在的目录 */
+  resettableDirs: ResettableDir[]
   /** 后端生成的人话总结，直接展示即可，不要在前端另拼一套文案 */
   message: string
 }

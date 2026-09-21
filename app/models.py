@@ -158,9 +158,20 @@ class IgnoredFile(CamelModel):
 
     存在的意义是把「真的没有视频」和「有视频、但被保护性跳过」区分开——
     以前这两种情况的返回都是 found=0，用户只能靠猜。
+
+    kind / resettable 是再往下一层的分化：光说「跳过了」还不够，
+    用户真正要判断的是「这个还救不救得回来」。
     """
     name: str
     reason: str
+    kind: str = ""            # "slice" 切片 / "origin" 已切分过的原片
+    resettable: bool = False  # 切片已不在的原片 -> 恢复原名即可重新分割
+
+
+class ResettableDir(CamelModel):
+    """含「切片已不在的原片」的目录。前端据此逐目录发起恢复。"""
+    path: str
+    recursive: bool = True
 
 
 class ScanResult(CamelModel):
@@ -170,6 +181,8 @@ class ScanResult(CamelModel):
     waiting: int = 0
     ignored: list[IgnoredFile] = Field(default_factory=list)
     ignored_total: int = 0
+    resettable_total: int = 0
+    resettable_dirs: list[ResettableDir] = Field(default_factory=list)
     message: str = ""
 
     @classmethod
@@ -186,6 +199,8 @@ class ScanResult(CamelModel):
             waiting=result.get("waiting", 0),
             ignored=result.get("ignored") or [],
             ignored_total=result.get("ignoredTotal", 0),
+            resettable_total=result.get("resettableTotal", 0),
+            resettable_dirs=result.get("resettableDirs") or [],
             message=result.get("message", ""))
 
 
