@@ -1,9 +1,12 @@
 import { request } from './client'
-import type { Health, Stats, BrowseResult, ScanOptions, ScanResult } from './types'
+import type { Health, Stats, BrowseResult, ScanOptions, ScanResult, EnvInfo } from './types'
 
 export const getHealth = (): Promise<Health> => request<Health>('/health')
 
 export const getStats = (): Promise<Stats> => request<Stats>('/stats')
+
+/** 容器内的运行环境（数据目录、ffmpeg 路径、uid/gid），设置页只读展示 */
+export const getEnv = (): Promise<EnvInfo> => request<EnvInfo>('/env')
 
 /** 目录浏览：不传 path 时返回可访问根目录列表 */
 export const browse = (path?: string): Promise<BrowseResult> => {

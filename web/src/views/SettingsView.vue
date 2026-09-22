@@ -5,9 +5,10 @@ import Modal from '../components/Modal.vue'
 import TagInput from '../components/TagInput.vue'
 import MarkSourcePicker from '../components/MarkSourcePicker.vue'
 import { getSettings, updateSettings } from '../api/settings'
+import { getEnv } from '../api/system'
 import { useToast } from '../composables/useToast'
 import { useWebSocket } from '../composables/useWebSocket'
-import type { Settings, OutdirMode } from '../api/types'
+import type { Settings, OutdirMode, EnvInfo } from '../api/types'
 
 const toast = useToast()
 const ws = useWebSocket()
@@ -18,6 +19,9 @@ const saving = ref(false)
 const form = ref<Settings>({} as Settings)
 // markSource 选到 delete 时，提交前必须二次确认
 const confirmDeleteSource = ref(false)
+// 容器运行环境（数据目录、uid/gid）：只读展示，取不到就不显示这一块，
+// 它是「怎么部署的」的参考信息，不该影响设置页本身可用
+const env = ref<EnvInfo | null>(null)
 
 // bySize 是个布尔字段：true = 按大小切，false = 按时长切。这里用下拉框而不是开关——
 // 开关关上时的含义（「按时长」）正好是标签的反义，很容易看反。
@@ -63,6 +67,9 @@ let unsub: (() => void) | null = null
 
 onMounted(() => {
   void load()
+  void getEnv()
+    .then((e) => { env.value = e })
+    .catch(() => { env.value = null })
   unsub = ws.on(onWsMessage)
 })
 
@@ -267,6 +274,21 @@ function save(): void {
         <div class="field">
           <label class="field-label">任务日志保留行数</label>
           <input v-model.number="form.server.jobLogLines" type="number" min="1" class="input" />
+        </div>
+
+        <!-- 只读：告诉用户「状态存在哪儿」，备份与迁移时才找得到 -->
+        <div v-if="env" class="field">
+          <label class="field-label">数据目录（只读）</label>
+          <input class="input" :value="env.dataDir" readonly />
+          <div class="field-hint">
+            设置、监控目录列表、任务历史、失败清单、归档目录记录都在这个目录里，
+            备份就是把它整个拷走。它由部署时的卷映射决定（Docker 是 compose 里
+            <strong>/data</strong> 的来源，即 <strong>.env</strong> 的 <strong>VS_DATA</strong>；
+            飞牛应用是安装所在存储空间的 <strong>@appdata/video-splitter</strong>），
+            <strong>改路径不会自动搬数据</strong>：先停容器、把旧目录原样拷到新位置、再改配置启动。
+            当前属主为 <strong>{{ env.uid }}:{{ env.gid }}</strong>，切片在文件管理里改不动时，
+            用它对照部署时填的 PUID / PGID。
+          </div>
         </div>
       </div>
     </template>

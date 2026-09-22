@@ -47,6 +47,18 @@ export interface DirShortcut {
   note: string
 }
 
+/** /api/env：容器内的运行环境（只读展示用，例如「设置 → 服务参数」里的数据目录） */
+export interface EnvInfo {
+  dataDir: string
+  dataDirWritable: boolean
+  ffmpeg: string | null
+  ffprobe: string | null
+  pythonVersion: string
+  platform: string
+  uid: number | null
+  gid: number | null
+}
+
 export interface BrowseResult {
   path: string
   parent: string | null
