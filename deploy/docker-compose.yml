@@ -24,12 +24,15 @@ services:
       UMASK: "022"
       VS_LOG_LEVEL: info
     volumes:
-      # 全部状态（配置、监控目录列表、数据库、任务历史、失败清单）都在这里，
-      # 备份 = 把这一整个目录拷走。
-      # 建议用绝对路径（如 /vol1/1000/video-splitter/data）而不是 ./data —— 相对路径
-      # 跟着 compose 文件所在目录解析，挪了 deploy/ 就会指向另一个空目录，
-      # 看起来像数据全丢。改路径不会自动搬数据：先 down、拷旧目录、再 up -d。
-      - ${VS_DATA:-./data}:/data
+      # 全部状态（配置、监控目录列表、数据库、任务历史、失败清单）都在这个
+      # named volume 里。用它的理由：
+      #   * 你不用填路径、也不用知道它在哪 —— Docker 自己管；
+      #   * 容器重建、升级镜像、甚至删掉容器重建都不会丢（绑定挂载反而会因为
+      #     相对路径 / 挪目录而指向空目录，看起来就像数据没了）。
+      # 备份走「设置 → 导出配置」，或者整卷打包：
+      #   docker run --rm -v video-splitter-data:/data -v "$PWD":/backup \
+      #     alpine tar czf /backup/vs-data.tgz -C /data .
+      - vsdata:/data
       # 监控目录：容器内路径与宿主机保持一致，这样默认白名单 /vol1…/vol4 直接可用
       - /vol1:/vol1
       # 有多个存储空间就继续加，并在网页「设置 → 可访问根目录」里补上
@@ -40,3 +43,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+# 固定卷名（不加 compose 的项目名前缀），上面那条备份命令才认得出。
+# 注意：删卷要先 `docker compose down -v`，普通的 down 不会删。
+volumes:
+  vsdata:
+    name: video-splitter-data

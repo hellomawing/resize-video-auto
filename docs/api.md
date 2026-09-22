@@ -141,6 +141,51 @@
 - `watch.minSize`：小于该大小的文件直接忽略
 - `watch.allowedRoots`：可访问根目录白名单，约束目录浏览与监控目录添加
 
+### GET /api/settings/export
+
+导出配置，供备份或换机器用。**只导出配置，不导出运行数据**：
+
+```json
+{
+  "version": 1,
+  "exportedAt": "2026-09-22T14:30:00",
+  "settings": { "split": { }, "watch": { }, "server": { } },
+  "watchpoints": [ { "id": "wp_1a2b3c4d", "path": "/vol1/1000/in", "scanMode": "realtime" } ],
+  "archiveDirs": ["resize-video-origin-file", "origin"]
+}
+```
+
+任务历史（`video-splitter.db`）不在里面 —— 它是运行数据，换机器一般不需要搬；
+要连历史一起搬请打包整个数据卷。
+
+### POST /api/settings/import
+
+body 就是上面那份 JSON，返回导入结果：
+
+```json
+{
+  "settingsApplied": true,
+  "watchpointsAdded": 1,
+  "watchpointsUpdated": 2,
+  "watchpointsSkipped": 0,
+  "archiveDirsAdded": 1,
+  "message": "导入完成：…"
+}
+```
+
+三块内容的合并语义**刻意不同**：
+
+| 部分 | 语义 | 为什么 |
+|---|---|---|
+| `settings` | 整体替换 | 导的就是一台机器的完整设置，逐项合并没有意义。空对象表示「不改设置」 |
+| `watchpoints` | 按**路径**合并：已存在的更新成导入内容，没有的新增 | 换机器后 id 必然对不上，按 id 判重会把整份重复添加一遍。本机侧的 `id`、`createdAt`、`lastScanAt`、`videoCount` 一律保留 |
+| `archiveDirs` | **只增不减** | 与运行时记名语义一致。少记一个名字就可能把归档里的原片重切一遍 |
+
+路径不在 `watch.allowedRoots` 内的监控目录会被跳过并计入 `watchpointsSkipped`，
+不会让整份导入失败（换机器后根目录不同很常见）。
+
+导入后与保存设置一样会重新装配监控与扫描计划。
+
 ---
 
 ## 3. 原片处理方式（markSource）

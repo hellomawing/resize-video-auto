@@ -214,7 +214,9 @@ docker compose up -d
 | `VS_PORT` | 网页端口，默认 8099 |
 | `TZ` | 时区，**会影响「每隔几小时 / 每天几点」的触发时刻** |
 | `PUID` / `PGID` | 容器内进程的属主。SSH 到 NAS 执行 `id 你的用户名` 查 |
-| `VS_DATA` | 配置与数据库的存放位置，建议定期备份 |
+
+> 配置与数据库（`VS_DATA`）**不在 `.env` 里** —— 它存在 Docker 自己管理的卷
+> `video-splitter-data` 中，不用填也不用管，升级容器不会丢。备份方式见下面第 4 节。
 
 **关于 PUID / PGID（很重要）**：
 
@@ -241,8 +243,8 @@ uid=1000(admin) gid=1001(Users) groups=1001(Users),994(docker),1000(Administrato
 
 ```yaml
 volumes:
-  - ${VS_DATA:-./data}:/data
-  - /vol1:/vol1
+  - vsdata:/data      # 程序自己的状态（Docker 管理的卷，不用填路径）
+  - /vol1:/vol1       # 要监控的视频
   # 有多个存储空间就继续加
   # - /vol2:/vol2
 ```
@@ -269,10 +271,11 @@ volumes:
 不要为了"解决"这个问题把挂载改成别的容器路径（如 `/vol1:/mnt/nas`）——
 路径不一致会让白名单、任务记录里的路径全对不上，得不偿失。
 
-### 4. 数据目录（容器内 `/data`）：所有状态都在这里
+### 4. 数据目录（容器内 `/data`）：存在 Docker 卷里，不用你配置
 
-编排里还有一条 `${VS_DATA}:/data`。它和上面那条不一样：**上面是"要处理的视频在哪"，
-这条是"程序自己的状态存哪"**，两者别混。`/data` 里只有四个小文件：
+容器里还有一个 `/data`，它和 `/vol1` 不一样：**`/vol1` 是"要处理的视频在哪"，
+`/data` 是"程序自己的状态存哪"**，两者别混。`/data` 里只有四个小文件（实测一共
+不到 100 KB）：
 
 | 文件 | 内容 | 丢了会怎样 |
 |---|---|---|
@@ -281,31 +284,38 @@ volumes:
 | `watchpoints.json` | 监控目录列表（含各自的扫描方式） | 监控目录全没了，要重新添加 |
 | `archive-dirs.json` | 用过的归档子目录名（只增不减） | 可能把归档目录里的原片当成新视频重切 |
 
-**注意它不在源码目录里也无所谓，但别放在会被清理的地方。** `VS_DATA` 的默认值是
-相对路径 `./data`，它相对 `deploy/` 解析，于是真机上落在
-`/vol1/1000/video-splitter/src/deploy/data`——日常部署脚本不会动它（只清 `src/app`、
-`src/core` 等源码目录，`deploy/` 刻意保留），但**相对路径会跟着 `deploy/` 走**：
-哪天挪了目录、或者换个路径执行 compose，就会指向另一个空目录，症状是"数据全没了"。
-所以**推荐改成绝对路径**：
+**它存在名为 `video-splitter-data` 的 Docker 卷里，你不填路径、也不用知道它在哪。**
 
-```bash
-# deploy/.env
-VS_DATA=/vol1/1000/video-splitter/data
-```
+为什么不直接放在容器里？因为容器的可写层是临时的，而本项目每次更新都是
+`docker compose up -d --force-recreate`（重建容器）——**去掉卷就等于每次升级丢一次
+状态**，其中 `archive-dirs.json` 丢了的后果最麻烦：归档目录不再被识别，已经处理过的
+原片会被当成新视频重切一遍。
 
-**改路径不会自动搬数据**，正确顺序是：
+为什么不用"宿主机目录挂载"？早期版本是这么做的，坑在于默认路径 `./data` 相对
+`docker-compose.yml` 所在目录解析——挪一下 `deploy/`、或者换个路径执行 compose，
+它就指向另一个空目录，症状同样是"数据全没了"。交给 Docker 管最省心。
 
-```bash
-docker compose down                                   # 1. 先停
-cp -a 旧的data目录 /vol1/1000/video-splitter/data      # 2. 原样拷（-a 保住属主）
-vi .env                                               # 3. 改 VS_DATA
-docker compose up -d                                  # 4. 再起
-```
+**备份（三选一）**：
 
-**备份**：把 `VS_DATA` 指的那个目录整个拷走即可（很小，只有几个文件）。恢复时
-反向操作——停容器、拷回去、起容器。飞牛应用（fpk）的安装向导不暴露这一项，数据
-固定放在应用自己所在存储空间的 `/volN/@appdata/video-splitter`，**卸载时不勾选
-「删除数据」就会保留**。
+1. **导出配置**（日常推荐）：网页「设置 → 导出配置」，得到一个 JSON，含设置、
+   监控目录、归档目录记录。换机器时在另一台导入即可。注意它**不含任务历史**，
+   历史只在 `video-splitter.db` 里，要连历史一起搬就用下面第 2 种。
+2. **整卷打包**（连历史一起）：
+
+   ```bash
+   docker run --rm -v video-splitter-data:/data -v "$PWD":/backup \
+     alpine tar czf /backup/vs-data.tgz -C /data .
+   ```
+
+   恢复是反向操作：`docker run --rm -v video-splitter-data:/data -v "$PWD":/backup
+   alpine tar xzf /backup/vs-data.tgz -C /data`（先 `docker compose down`，卷不存在时
+   Docker 会自动建一个空的）。
+3. **查看它在宿主机的真实位置**（只是想看看，或者想让别的程序读）：
+   `docker volume inspect video-splitter-data`。
+
+飞牛应用（fpk）形态同样不暴露这一项：数据固定在应用所在存储空间的
+`/volN/@appdata/video-splitter`（那里用的是绑定挂载，这样应用中心卸载时能一并
+清理），**卸载时不勾选「删除数据」就会保留**。
 
 > 网页「设置 → 服务参数」里有一行只读的**数据目录**，直接显示容器内看到的路径和
 > 当前运行身份（uid:gid），排查"数据存哪了 / 属主对不对"时不用进容器。

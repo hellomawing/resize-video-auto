@@ -362,6 +362,24 @@ export interface FailureList {
   items: FailureRecord[]
 }
 
+// ---- 配置导入导出 ----
+export interface ConfigBundle {
+  version: number
+  exportedAt: string | null
+  settings: Record<string, unknown>
+  watchpoints: Record<string, unknown>[]
+  archiveDirs: string[]
+}
+
+export interface ImportResult {
+  settingsApplied: boolean
+  watchpointsAdded: number
+  watchpointsUpdated: number
+  watchpointsSkipped: number
+  archiveDirsAdded: number
+  message: string
+}
+
 // ---- WebSocket 消息（服务端单向推送） ----
 export type WsMessage =
   | { type: 'hello'; serverTime: string; version: string }

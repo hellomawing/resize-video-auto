@@ -4,11 +4,11 @@ import Toggle from '../components/Toggle.vue'
 import Modal from '../components/Modal.vue'
 import TagInput from '../components/TagInput.vue'
 import MarkSourcePicker from '../components/MarkSourcePicker.vue'
-import { getSettings, updateSettings } from '../api/settings'
+import { getSettings, updateSettings, exportConfig, importConfig } from '../api/settings'
 import { getEnv } from '../api/system'
 import { useToast } from '../composables/useToast'
 import { useWebSocket } from '../composables/useWebSocket'
-import type { Settings, OutdirMode, EnvInfo } from '../api/types'
+import type { ConfigBundle, Settings, OutdirMode, EnvInfo } from '../api/types'
 
 const toast = useToast()
 const ws = useWebSocket()
@@ -22,6 +22,12 @@ const confirmDeleteSource = ref(false)
 // 容器运行环境（数据目录、uid/gid）：只读展示，取不到就不显示这一块，
 // 它是「怎么部署的」的参考信息，不该影响设置页本身可用
 const env = ref<EnvInfo | null>(null)
+
+// 配置导入导出：导出直接下载 JSON；导入先读文件、弹确认框，确认后才提交
+const exporting = ref(false)
+const importing = ref(false)
+const confirmImport = ref(false)
+const pendingBundle = ref<ConfigBundle | null>(null)
 
 // bySize 是个布尔字段：true = 按大小切，false = 按时长切。这里用下拉框而不是开关——
 // 开关关上时的含义（「按时长」）正好是标签的反义，很容易看反。
@@ -97,6 +103,71 @@ function save(): void {
     return
   }
   void doSave()
+}
+
+function fileStamp(): string {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
+}
+
+async function doExport(): Promise<void> {
+  exporting.value = true
+  try {
+    const data = await exportConfig()
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+    )
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `video-splitter-config-${fileStamp()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('配置已导出（含设置、监控目录、归档目录记录）')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
+function onPickFile(e: Event): void {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    // 先清空：否则再选同一个文件不会再触发 change
+    input.value = ''
+    try {
+      const parsed = JSON.parse(String(reader.result)) as ConfigBundle
+      if (!parsed || typeof parsed !== 'object' || !parsed.settings) {
+        toast.error('这不像本工具导出的配置文件（缺少 settings 字段）')
+        return
+      }
+      pendingBundle.value = parsed
+      confirmImport.value = true
+    } catch {
+      toast.error('文件不是有效的 JSON，无法导入')
+    }
+  }
+  reader.readAsText(file)
+}
+
+async function doImport(): Promise<void> {
+  if (!pendingBundle.value) return
+  importing.value = true
+  try {
+    const result = await importConfig(pendingBundle.value)
+    toast.success(result.message || '导入完成')
+    await load()
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '导入失败')
+  } finally {
+    importing.value = false
+    confirmImport.value = false
+    pendingBundle.value = null
+  }
 }
 </script>
 
@@ -281,13 +352,38 @@ function save(): void {
           <label class="field-label">数据目录（只读）</label>
           <input class="input" :value="env.dataDir" readonly />
           <div class="field-hint">
-            设置、监控目录列表、任务历史、失败清单、归档目录记录都在这个目录里，
-            备份就是把它整个拷走。它由部署时的卷映射决定（Docker 是 compose 里
-            <strong>/data</strong> 的来源，即 <strong>.env</strong> 的 <strong>VS_DATA</strong>；
-            飞牛应用是安装所在存储空间的 <strong>@appdata/video-splitter</strong>），
-            <strong>改路径不会自动搬数据</strong>：先停容器、把旧目录原样拷到新位置、再改配置启动。
+            设置、监控目录列表、任务历史、失败清单、归档目录记录都在这个目录里。
+            它由 Docker 自己管理（卷 <strong>video-splitter-data</strong>），
+            不用配置、升级容器也不会丢；飞牛应用则固定在安装所在存储空间的
+            <strong>@appdata/video-splitter</strong>。备份用下面的「导出配置」，
+            要连任务历史一起搬才需要打包整个卷。
             当前属主为 <strong>{{ env.uid }}:{{ env.gid }}</strong>，切片在文件管理里改不动时，
             用它对照部署时填的 PUID / PGID。
+          </div>
+        </div>
+      </div>
+
+      <!-- 配置备份与恢复 -->
+      <div class="card">
+        <h2 class="card-title">配置备份与恢复</h2>
+        <div class="field-hint card-intro">
+          导出一份 JSON：含<strong>设置</strong>、<strong>监控目录</strong>、
+          <strong>归档目录记录</strong>。换机器或重装后在另一台导入，不用重新配一遍。
+          任务历史不在里面 —— 那是运行数据，要一起搬得打包整个数据卷。
+        </div>
+        <div class="field">
+          <label class="field-label">导出</label>
+          <button class="btn" :disabled="exporting" @click="doExport">
+            <span v-if="exporting" class="spinner" /> 导出配置
+          </button>
+        </div>
+        <div class="field">
+          <label class="field-label">导入</label>
+          <input type="file" accept="application/json,.json" class="input" @change="onPickFile" />
+          <div class="field-hint">
+            导入会<strong>整体替换当前设置</strong>；监控目录按<strong>路径</strong>合并
+            （已存在的更新成导入内容，没有的新增）；归档目录记录只增不减。
+            路径不在白名单里的监控目录会被跳过。<strong>视频文件本身不受影响。</strong>
           </div>
         </div>
       </div>
@@ -302,6 +398,20 @@ function save(): void {
       <template #footer>
         <button class="btn" @click="confirmDeleteSource = false">我再想想</button>
         <button class="btn btn--danger" @click="confirmDeleteSource = false; doSave()">确认删除源文件并保存</button>
+      </template>
+    </Modal>
+
+    <!-- 导入配置二次确认：会替换设置，必须先说清楚再动手 -->
+    <Modal v-model="confirmImport" title="确认导入配置">
+      <p>将用文件里的配置覆盖当前设置。</p>
+      <p><strong>设置</strong>整体替换（切分、监控、服务参数）；<strong>监控目录</strong>按路径合并 ——
+        已存在的更新成导入内容，没有的新增；<strong>归档目录记录</strong>只增不减。</p>
+      <p>视频文件本身不受影响。</p>
+      <template #footer>
+        <button class="btn" @click="confirmImport = false">取消</button>
+        <button class="btn btn--primary" :disabled="importing" @click="doImport">
+          <span v-if="importing" class="spinner" /> 确认导入
+        </button>
       </template>
     </Modal>
   </div>

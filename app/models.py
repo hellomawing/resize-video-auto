@@ -371,3 +371,29 @@ class FailurePathIn(CamelModel):
 class FailureClearIn(CamelModel):
     # 不传 paths（或传 null）表示「全部清掉」
     paths: Optional[list[str]] = None
+
+
+# ---------------------------------------------------------------- 配置导入导出
+
+class ConfigBundle(CamelModel):
+    """
+    导出/导入的配置包。
+
+    三块内容都用**存储原样**（camelCase 的裸 dict/list），不再套一层模型：
+    它们本来就是 config 读写的文件内容，再定义一遍模型只会多一处要同步的地方，
+    而且 normalize（save_settings / normalize_watchpoint）本来就会纠正脏值。
+    """
+    version: int = 1
+    exported_at: Optional[str] = None
+    settings: dict = Field(default_factory=dict)
+    watchpoints: list[dict] = Field(default_factory=list)
+    archive_dirs: list[str] = Field(default_factory=list)
+
+
+class ImportResult(CamelModel):
+    settings_applied: bool = False
+    watchpoints_added: int = 0
+    watchpoints_updated: int = 0
+    watchpoints_skipped: int = 0
+    archive_dirs_added: int = 0
+    message: str = ""
