@@ -327,7 +327,7 @@ async function doImport(): Promise<void> {
         <div class="field">
           <label class="field-label">可访问根目录白名单</label>
           <TagInput v-model="form.watch.allowedRoots" placeholder="输入根目录后回车，如 /vol1" />
-          <div class="field-hint">约束目录浏览与监控目录添加，超出范围的路径会被后端拒绝</div>
+          <div class="field-hint">约束目录浏览与监控目录添加，超出范围的路径会被后端拒绝；挂载进容器的目录会自动并入，无需在此重复填写</div>
         </div>
       </div>
 

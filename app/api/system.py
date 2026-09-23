@@ -53,6 +53,65 @@ def stats() -> StatsOut:
 
 # ---------------------------------------------------------------- 目录浏览
 
+# 伪文件系统与容器自身部件：mountinfo 里这些是系统件，不是用户挂进来的数据目录
+_PSEUDO_FSTYPES = {
+    "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
+    "overlay", "mqueue", "shm", "securityfs", "debugfs", "tracefs",
+    "pstore", "bpf", "autofs", "binfmt_misc", "hugetlbfs", "configfs",
+    "fusectl", "ramfs", "nsfs", "efivarfs",
+}
+
+# 容器自身的挂载点，绝不能当数据根暴露出去（/data 是整个程序状态所在）
+_MOUNT_NEVER_ROOTS = ("/", "/data")
+
+
+def _unescape_mountpoint(text: str) -> str:
+    # mountinfo 里空格等特殊字符按八进制转义（\040 等）
+    return (text.replace(r"\040", " ").replace(r"\011", "\t")
+                .replace(r"\012", "\n").replace(r"\134", "\\"))
+
+
+def _parse_mountinfo(text: str) -> list:
+    """从 /proc/self/mountinfo 文本里挑出「疑似用户挂载」的挂载点。
+
+    容器里 mountinfo 的真实文件系统条目，排除伪文件系统与容器自部件
+    （根 overlay、/data 卷）之后，剩下的就是 compose / docker run 里
+    -v 显式挂进来的路径（如 /vol1、/test-dir）。
+    """
+    roots = []
+    for line in text.splitlines():
+        fields = line.split()
+        if "-" not in fields:
+            continue
+        sep = fields.index("-")
+        if len(fields) < sep + 2 or len(fields) < 5:
+            continue
+        mountpoint = _unescape_mountpoint(fields[4])
+        fstype = fields[sep + 1]
+        if fstype in _PSEUDO_FSTYPES or mountpoint in _MOUNT_NEVER_ROOTS:
+            continue
+        roots.append(mountpoint)
+    return roots
+
+
+def _detect_mounted_roots() -> list:
+    """读取本进程的 mountinfo，返回实际存在的数据目录挂载点。
+
+    非 Linux（本机开发）没有 /proc，返回空表 —— 退回纯设置白名单。
+    """
+    try:
+        with open("/proc/self/mountinfo", "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return []
+    found = []
+    for mp in _parse_mountinfo(text):
+        # 挂载文件（Docker 自动挂的 /etc/hosts 之类）不是目录，滤掉
+        if os.path.isdir(mp):
+            found.append(mp)
+    return found
+
+
 def _allowed_roots() -> list:
     settings = config.load_settings()
     roots = []
@@ -61,6 +120,14 @@ def _allowed_roots() -> list:
             roots.append(Path(raw).resolve())
         except Exception:
             continue
+    # 容器里显式挂载的目录自动并入白名单：用户既然已经在 Docker 里挂了
+    # 这个路径，意图足够明确，不该再要求到设置里手抄一遍（真机 /test-dir 案例）。
+    known = {str(r) for r in roots}
+    for mp in _detect_mounted_roots():
+        p = Path(mp)
+        if str(p) not in known:
+            known.add(str(p))
+            roots.append(p)
     return roots
 
 

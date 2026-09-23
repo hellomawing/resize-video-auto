@@ -321,7 +321,7 @@ const columns = [
         <div class="page-subtitle">
           选择每个目录的扫描方式，自动切分新落盘的大视频
           <template v-if="allowedRoots.length">
-            · 允许根目录：{{ allowedRoots.join('、') }}
+            · 允许根目录见「设置」，容器内挂载的目录自动可选
           </template>
         </div>
       </div>
@@ -411,7 +411,7 @@ const columns = [
           <input class="input" :value="form.path" placeholder="请选择目录" readonly />
           <button class="btn" type="button" @click="pickerOpen = true">浏览…</button>
         </div>
-        <div v-if="!editingId" class="field-hint">仅可选择白名单根目录（{{ allowedRoots.join('、') || '无' }}）下的路径</div>
+        <div v-if="!editingId" class="field-hint">仅可选择白名单根目录下的路径；挂载进容器的目录会自动并入白名单</div>
       </div>
       <div class="field">
         <label class="field-label">扫描方式</label>

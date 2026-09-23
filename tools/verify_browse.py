@@ -15,6 +15,9 @@ fnOS 的存储池根目录 `/vol1` 权限位是 000，`getfacl` 连一条扩展 
   3. 列不出来时的错误文案必须给出路，而不是一句「没有权限」把人堵死；
      文案也不再指引「直接输入完整路径」—— 选择器已去掉手动输入入口，
      撤销页更是直接换成「监控目录」下拉框（不走 /api/browse）
+  4. 容器里显式挂载的目录自动并入白名单（真机案例：用户把监控目录挂成
+     /test-dir，白名单默认只有 /vol1~4，选择器里怎么也找不到它）——
+     用户都在 Docker 里挂了这个路径，不该再要求到设置里手抄一遍
 
     python tools/verify_browse.py
 """
@@ -199,6 +202,63 @@ with TestClient(app) as client:
 
     data = client.get("/api/browse", params={"path": str(INBOX)}).json()
     check("可正常枚举的目录没有多余建议", data["suggestedRoots"], [])
+
+    print("== 8. 容器挂载点自动并入白名单 ==")
+    from app.api.system import (_detect_mounted_roots,  # noqa: E402
+                                _parse_mountinfo)
+    # 一份尽量贴近真机的 mountinfo：根 overlay、伪文件系统、/data 卷、
+    # Docker 自动挂的文件（/etc/hosts）、以及用户显式挂的两个数据目录
+    SAMPLE_MOUNTINFO = "\n".join([
+        "36 35 0:32 / / rw,relatime shared:1 - overlay overlay rw",
+        "37 36 0:33 / /proc rw - proc proc rw",
+        "38 36 0:34 / /sys rw - sysfs sysfs rw",
+        "39 36 0:35 / /dev rw - tmpfs tmpfs rw",
+        "40 36 259:1 /vol1/data /data rw,relatime - ext4 /dev/md0 rw",
+        "41 36 259:1 / /vol1 rw,relatime - btrfs /dev/md0 rw",
+        "42 36 259:1 /1000/video-split-in /test-dir rw,relatime - btrfs /dev/md0 rw",
+        "43 36 259:1 /docker/x/hosts /etc/hosts rw,relatime - btrfs /dev/md0 rw",
+        r"44 36 259:1 /dir\040with\040space /with-space rw,relatime - btrfs /dev/md0 rw",
+    ])
+    parsed = _parse_mountinfo(SAMPLE_MOUNTINFO)
+    check("解析出用户挂载", parsed[:3], ["/vol1", "/test-dir", "/etc/hosts"])
+    check("根 overlay 被排除", "/" in parsed, False)
+    check("伪文件系统被排除",
+          [p for p in parsed if p in ("/proc", "/sys", "/dev")], [])
+    check("/data 卷被排除（程序状态不暴露）", "/data" in parsed, False)
+    check("转义的空格被还原", "/with-space" in parsed, True)
+
+    # _detect 层再按「真实存在的目录」过滤：/etc/hosts 是文件、GHOST 不存在
+    MOUNTED_FILE = MEDIA / "mounted-file"
+    MOUNTED_FILE.touch()
+    sample = "\n".join([
+        "41 36 259:1 / %s rw - btrfs /dev/md0 rw" % MEDIA,
+        "42 36 259:1 / %s rw - btrfs /dev/md0 rw" % GHOST,
+        "43 36 259:1 /f %s rw - btrfs /dev/md0 rw" % MOUNTED_FILE,
+        "44 36 0:33 / /proc rw - proc proc rw",
+    ])
+    with mock.patch("builtins.open", mock.mock_open(read_data=sample)):
+        check("只保留真实存在的目录挂载点",
+              _detect_mounted_roots(), [str(MEDIA)])
+    check("无 /proc 的环境探测不报错且返回列表",
+          isinstance(_detect_mounted_roots(), list), True)
+
+    # 集成：白名单收窄后 outside 是 403（第 5 节已验），
+    # 一旦它作为挂载点被探测到，就该直接可选可浏览
+    save_roots([MEDIA])
+    with mock.patch("app.api.system._detect_mounted_roots",
+                    return_value=[str(OUTSIDE)]):
+        data = client.get("/api/browse").json()
+        check("挂载点并入 roots", data["roots"], [str(MEDIA), str(OUTSIDE)])
+        r = client.get("/api/browse", params={"path": str(OUTSIDE)})
+        check("挂载目录可浏览（不再 403）", r.status_code, 200)
+        r = client.post("/api/watchpoints", json={
+            "path": str(OUTSIDE), "recursive": False, "scanMode": "manual",
+            "scanIntervalHours": 6, "scanTime": "03:00"})
+        # 第 0 节已建过同路径监控目录，这里应撞「重复」409 而不是白名单 403
+        # —— 409 恰恰证明 ensure_allowed 已经放行
+        check("挂载目录可过白名单闸（撞重复而非 403）", r.status_code, 409)
+    r = client.get("/api/browse", params={"path": str(OUTSIDE)})
+    check("探测恢复后 outside 回到白名单外", r.status_code, 403)
 
 print()
 if bad:
