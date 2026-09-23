@@ -69,7 +69,6 @@ const formOpen = ref(false)
 const editingId = ref<string | null>(null)
 const form = ref<FormState>(emptyForm())
 const saving = ref(false)
-const pickerOpen = ref(false)
 
 const deleteTarget = ref<WatchPoint | null>(null)
 
@@ -403,23 +402,14 @@ const columns = [
     <Modal v-model="formOpen" :title="editingId ? '编辑监控目录' : '新增监控目录'">
       <div class="field">
         <label class="field-label">目录路径</label>
-        <!-- 新增：不给「填不进去的输入框」，直接引导去选；选完把路径展示出来
+        <!-- 新增：行内三步走（选存储位置 → 选使用方式 → 需要时挑子文件夹），
+             不再「弹窗里再开弹窗」；最终会监控哪个路径由组件自己回填。
              编辑：路径不可改（后端也不支持改路径），只如实展示 -->
         <div v-if="editingId" class="picked-path">
           <span class="picked-icon">📁</span>
           <span class="picked-text">{{ form.path }}</span>
         </div>
-        <div v-else-if="form.path" class="picked-path">
-          <span class="picked-icon">📁</span>
-          <span class="picked-text">{{ form.path }}</span>
-          <button class="btn btn--sm" type="button" @click="pickerOpen = true">重新选择</button>
-        </div>
-        <button v-else class="btn btn--primary" type="button" @click="pickerOpen = true">
-          选择文件夹…
-        </button>
-        <div v-if="!editingId" class="field-hint">
-          在容器已挂载的目录里逐级选择。要处理别的位置，请在 docker-compose 的 volumes 里挂载它
-        </div>
+        <DirPicker v-else v-model="form.path" :active="formOpen" />
       </div>
       <div class="field">
         <label class="field-label">扫描方式</label>
@@ -453,6 +443,11 @@ const columns = [
       </div>
 
       <template #footer>
+        <!-- 新增时把「最终会监控哪个路径」摆在固定区里：内容区可能已经滚走，
+             路径又长又难核对。这里只许省略号截断，绝不许把按钮顶出弹窗 -->
+        <span v-if="!editingId" class="foot-path faint" :title="form.path">
+          将监控：{{ form.path || '（尚未选择）' }}
+        </span>
         <button class="btn" @click="formOpen = false">取消</button>
         <button class="btn btn--primary" :disabled="saving" @click="save">
           <span v-if="saving" class="spinner" /> 保存
@@ -460,13 +455,11 @@ const columns = [
       </template>
     </Modal>
 
-    <DirPicker v-model="form.path" v-model:open="pickerOpen" />
-
     <!-- 删除确认 -->
     <Modal :model-value="deleteTarget !== null" title="移除监控目录" @update:model-value="(v) => { if (!v) deleteTarget = null }">
       <p>
         确定要移除监控目录
-        <strong>{{ deleteTarget?.path }}</strong>
+        <strong class="path-break">{{ deleteTarget?.path }}</strong>
         吗？已切分的历史任务不受影响。
       </p>
       <p class="faint">如果只是想让它别再自动扫，把「扫描方式」改成「仅手动」即可，不需要删掉。</p>
@@ -484,7 +477,7 @@ const columns = [
     >
       <p>
         本次扫描会把
-        <strong>{{ deleteScanTarget?.path }}</strong>
+        <strong class="path-break">{{ deleteScanTarget?.path }}</strong>
         下切分成功的原片<strong class="danger-text">永久删除</strong>，无法恢复。
       </p>
       <p class="faint">
@@ -527,6 +520,19 @@ const columns = [
   font-size: var(--font-size-sm);
   word-break: break-all;
 }
+/*
+ * 弹窗底部那行「将监控 …」。它是 flex 子项，必须 min-width: 0 + 省略号，
+ * 否则一条几十字符的长路径会把它撑到弹窗外，把「取消 / 保存」一起顶出去。
+ */
+.foot-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: var(--font-size-xs);
+}
 .card-loading {
   display: flex;
   align-items: center;
@@ -562,6 +568,10 @@ const columns = [
 }
 .danger-text {
   color: var(--color-danger);
+}
+/* 弹窗正文里出现的路径：没有空格可断，只能逐字符断行，否则横向顶出对话框 */
+.path-break {
+  word-break: break-all;
 }
 .page-note {
   margin-top: var(--space-3);
