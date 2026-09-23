@@ -19,6 +19,15 @@ const saving = ref(false)
 const form = ref<Settings>({} as Settings)
 // markSource 选到 delete 时，提交前必须二次确认
 const confirmDeleteSource = ref(false)
+// 开启「覆盖同名切片」同样是破坏性操作（被覆盖的内容找不回来）：
+// 关掉不需要问，开启前必须问一次
+const confirmOverwrite = ref(false)
+// 改监听地址/端口会让当前访问地址失效，保存前问一次
+const confirmServerChange = ref(false)
+// 监听参数进入页面时的值，用来判断这次保存有没有动过它；
+// 用户点过确认后置 ack，免得后面的检查再弹一遍
+const loadedServer = ref<{ host: string; port: number } | null>(null)
+const serverAck = ref(false)
 // 容器运行环境（数据目录、uid/gid）：只读展示，取不到就不显示这一块，
 // 它是「怎么部署的」的参考信息，不该影响设置页本身可用
 const env = ref<EnvInfo | null>(null)
@@ -67,10 +76,20 @@ const outdirHint = computed(
   () => OUTDIR_OPTIONS.find((o) => o.value === form.value.split?.outdirMode)?.hint ?? '',
 )
 
+// 监听地址/端口在容器里被环境变量锁死了：启动逻辑是「环境变量优先于设置」，
+// 而 Dockerfile 已经写死了 VS_HOST / VS_PORT，所以这两个框改了没有任何作用。
+// 取到值就置为只读并说明该去哪儿改 —— 别让人对着一个没反应的输入框反复试。
+const hostLocked = computed(() => !!env.value?.hostEnv)
+const portLocked = computed(() => !!env.value?.portEnv)
+
 async function load(): Promise<void> {
   loading.value = true
   try {
-    form.value = await getSettings()
+    const data = await getSettings()
+    form.value = data
+    // 记下服务端给的监听参数，作为「这一次有没有改过」的基准
+    loadedServer.value = { host: data.server.host, port: data.server.port }
+    serverAck.value = false
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '加载设置失败')
   } finally {
@@ -100,6 +119,9 @@ async function doSave(): Promise<void> {
   try {
     const saved = await updateSettings(form.value)
     form.value = saved
+    // 存下了就以新值作基准，下次保存重新比对
+    loadedServer.value = { host: saved.server.host, port: saved.server.port }
+    serverAck.value = false
     toast.success('设置已保存，服务已应用新配置')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '保存失败')
@@ -108,14 +130,52 @@ async function doSave(): Promise<void> {
   }
 }
 
+/** 监听地址/端口这一次有没有被动过（进页面时的值 vs 当前值） */
+function serverTouched(): boolean {
+  const base = loadedServer.value
+  const now = form.value?.server
+  if (!base || !now) return false
+  return base.host !== now.host || base.port !== now.port
+}
+
 function save(): void {
   if (!form.value) return
+  // 先问最要紧的：改监听参数会让当前地址失效，其次才是不可逆的数据操作
+  if (!serverAck.value && serverTouched()) {
+    confirmServerChange.value = true
+    return
+  }
   // 删除源文件是破坏性操作，提交前强制二次确认
   if (form.value.split.markSource === 'delete') {
     confirmDeleteSource.value = true
     return
   }
   void doSave()
+}
+
+/** 确认框里选「继续保存」：记下提醒过了，再走一遍剩下的检查 */
+function onServerChangeOk(): void {
+  serverAck.value = true
+  confirmServerChange.value = false
+  save()
+}
+
+/**
+ * 覆盖开关不能直接 v-model：开启是不可逆的（同名文件直接被盖掉），
+ * 必须先弹确认；关闭是往安全方向走，直接生效。
+ */
+function onOverwriteChange(value: boolean): void {
+  if (!form.value?.split) return
+  if (value) {
+    confirmOverwrite.value = true
+    return
+  }
+  form.value.split.overwrite = false
+}
+
+function onOverwriteOk(): void {
+  if (form.value?.split) form.value.split.overwrite = true
+  confirmOverwrite.value = false
 }
 
 function fileStamp(): string {
@@ -214,8 +274,8 @@ async function doImport(): Promise<void> {
         </div>
         <div class="field-hint">
           切割方式固定为 <strong>ffmpeg 无损流拷贝</strong>：只换容器、不重新编码，
-          画质音质零损失，每段都是能独立播放的完整视频。切不动的文件不会被硬切，
-          而是原样保留原片、记进「任务队列 → 处理失败的文件」里等你处理。
+          <span class="hl">画质音质零损失</span>，每段都能独立播放。
+          切不动的文件不会被硬切，而是原样保留原片、记进「任务队列 → 处理失败的文件」里等你处理。
         </div>
 
         <div class="field">
@@ -225,9 +285,9 @@ async function doImport(): Promise<void> {
             <option value="seconds">按时长 —— 每段大约设定秒数</option>
           </select>
           <div class="field-hint">
-            它同时决定下面填哪一格：按大小填「单段大小」，按时长填「单段时长」。
-            也决定扫描门槛：按大小时只切超过「单段大小」的视频；按时长时所有视频都入队，
-            仍受「监控参数 → 最小文件大小」的限制。
+            它同时决定下面填哪一格：<strong>按大小</strong>填「单段大小」、<strong>按时长</strong>填「单段时长」。
+            也决定扫描门槛 —— 按大小时只切超过「单段大小」的视频，按时长时所有视频都入队
+            （仍受「监控参数 → 最小文件大小」限制）。
           </div>
         </div>
 
@@ -235,7 +295,7 @@ async function doImport(): Promise<void> {
           <label class="field-label">单段大小</label>
           <input v-model="form.split.size" class="input" placeholder="如 3.9G" />
           <div class="field-hint">
-            身兼两职：① 比它小的视频直接跳过、不切；② 切分时以它为每段的目标上限。
+            身兼两职：① <strong>比它小的视频直接跳过</strong>、不切；② 切分时以它为<strong>每段的上限</strong>。
             支持 B / K / M / G，如 500M、3.9G，不区分大小写。
           </div>
         </div>
@@ -252,14 +312,13 @@ async function doImport(): Promise<void> {
           <TagInput v-model="form.split.ext" placeholder="输入扩展名后回车，如 .mp4" />
           <div class="field-hint">
             只处理这些后缀的文件，不区分大小写；漏写前面的点会自动补上。
-            本工具自己切出来的片段、已加标记的原片、归档目录里的文件始终跳过，与此项无关。
+            本工具自己切出来的片段、已加标记的原片、归档目录里的文件<strong>始终跳过</strong>，与此项无关。
           </div>
           <div class="field-hint">
-            可选范围受限于「能无损切分的格式」：
+            可选范围限「能无损切分的格式」：
             <span class="mono">.mp4 .m4v .mov .mkv .webm .ts .m2ts .mts</span>。
-            其它后缀（avi / wmv / flv / rmvb 等）不在其列 —— 切开它们只能重新编码（有损）
-            或按字节硬劈（第 2 段起播不了），本工具两者都不做，所以它们既不会被扫描，
-            填进这里也会在保存时被剔除。
+            其它后缀（avi / wmv / flv / rmvb 等）只能重新编码（有损）或按字节硬劈（第 2 段起播不了），
+            本工具两者都不做 —— 所以它们既不会被扫描，<span class="hl">填进来也会在保存时被剔除</span>。
           </div>
         </div>
 
@@ -293,9 +352,10 @@ async function doImport(): Promise<void> {
             hide-follow
           />
           <div class="field-hint">
-            这里定的是全局默认值，而且可以被覆盖：每个监控目录能在「监控目录」页单独设一个，
-            手动扫描时还能只改这一次。生效顺序是「这一次手动指定 &gt; 该目录的设置 &gt; 这里」，
-            并以任务入队那一刻为准 —— 已排队的任务不受之后改动影响。
+            这是<strong>全局默认值</strong>，但可以被覆盖：每个监控目录能在「监控目录」页单独设一个，
+            手动扫描时还能只改这一次。
+            生效顺序是 <span class="hl">这一次手动指定 &gt; 该目录的设置 &gt; 这里</span>，
+            并以<strong>任务入队那一刻</strong>为准 —— 已排队的任务不受之后改动影响。
           </div>
         </div>
 
@@ -303,18 +363,17 @@ async function doImport(): Promise<void> {
           <label class="field-label">保留元数据</label>
           <Toggle v-model="form.split.keepMetadata" />
           <div class="field-hint">
-            把源文件的容器信息一并写进切片：拍摄时间、相机 / 机型、定位这类标签都靠它留住。
+            把源文件的容器信息一并写进切片：<strong>拍摄时间、相机 / 机型、定位</strong>这类标签都靠它留住。
             关闭后切片只剩基本属性。少数标签 ffmpeg 会强制改写，开着也留不住。
-            只对「流拷贝」有意义；纯字节切割原样搬运字节，这一项不参与。
           </div>
         </div>
         <div class="field">
           <label class="field-label">覆盖已存在的同名切片</label>
-          <Toggle v-model="form.split.overwrite" />
+          <Toggle :model-value="form.split.overwrite" @update:model-value="onOverwriteChange" />
           <div class="field-hint" :class="{ 'field-hint--warn': form.split.overwrite }">
-            关闭（推荐）：一旦发现同名切片就中止这次切分，已有文件一个都不动，留你确认。
-            开启：直接覆盖同名文件，被覆盖的内容找不回来。同名切片多半是重复扫描造成的，
-            但如果那个名字下正好是你自己放的文件，就一起没了。
+            关闭（推荐）：一旦发现同名切片就<strong>中止这次切分</strong>，已有文件一个都不动，留你确认。
+            开启：直接覆盖同名文件，<span class="hl hl--danger">被覆盖的内容找不回来</span>。
+            同名切片多半是重复扫描造成的，但如果那个名字下正好是你自己放的文件，就一起没了。
           </div>
         </div>
       </div>
@@ -322,44 +381,106 @@ async function doImport(): Promise<void> {
       <!-- 监控参数 -->
       <div class="card">
         <h2 class="card-title">监控参数</h2>
+        <div class="field-hint card-intro">
+          决定「多久发现一次新文件」与「什么样的文件才值得切」。
+          筛选门槛（稳定检测、最小大小、忽略后缀）<strong>对手动点「扫描」同样生效</strong>。
+        </div>
+
         <div class="field">
           <label class="field-label">实时监听（inotify）</label>
           <Toggle v-model="form.watch.realtime" />
-          <div class="field-hint">网络共享目录会自动退化为轮询</div>
+          <div class="field-hint">
+            开着时新文件<strong>几秒内</strong>就被发现。网络共享目录（SMB / NFS）的系统通知不可靠，
+            会自动退化为轮询。
+            <span class="hl">关掉不等于停止扫描</span> —— 仍按下面的间隔轮询，只是不再即时。
+          </div>
         </div>
         <div class="field">
           <label class="field-label">轮询间隔（秒）</label>
-          <input v-model.number="form.watch.pollInterval" type="number" min="1" class="input" />
+          <input v-model.number="form.watch.pollInterval" type="number" min="5" max="86400" class="input" />
+          <div class="field-hint">
+            每隔这么久把「实时监听」模式的监控目录整个扫一遍。这一项<strong>始终生效</strong>，
+            是 inotify 的兜底（网络共享上它就是唯一的发现手段）。
+            范围 5 ~ 86400；定时扫描 / 仅手动的目录不受它影响。
+          </div>
         </div>
         <div class="field">
           <label class="field-label">文件稳定检测（秒）</label>
-          <input v-model.number="form.watch.settleSeconds" type="number" min="0" class="input" />
-          <div class="field-hint">大小与修改时间连续这么多秒不变才入队，避免切到半成品</div>
+          <input v-model.number="form.watch.settleSeconds" type="number" min="0" max="86400" class="input" />
+          <div class="field-hint">
+            大小与修改时间连续这么多秒不变才入队，避免切到还没拷完的半成品。
+            填 <span class="hl">0 = 不做检测</span>：正在写入的文件会被直接切走，不太建议。
+          </div>
         </div>
         <div class="field">
           <label class="field-label">最小文件大小（忽略更小的）</label>
           <input v-model="form.watch.minSize" class="input" placeholder="如 0 或 100M" />
+          <div class="field-hint">
+            比它小的文件不切。<strong>填 0 = 不限制</strong>。支持 B / K / M / G，如 100M。
+          </div>
         </div>
         <div class="field">
           <label class="field-label">忽略的后缀</label>
           <TagInput v-model="form.watch.ignoreSuffixes" placeholder="输入后缀后回车，如 .tmp" />
+          <div class="field-hint">
+            这些后缀的文件<strong>永远不处理</strong>，对所有监控目录一并生效（不必逐个去配过滤规则）。
+            默认挡的是下载中的临时文件：
+            <span class="mono">.tmp .part .crdownload .!qb .download</span>。
+          </div>
         </div>
       </div>
 
       <!-- 服务参数 -->
       <div class="card">
         <h2 class="card-title">服务参数</h2>
+        <div class="field-hint card-intro">
+          服务本身的监听与日志。<strong>这一栏改错会让控制台打不开</strong>，不确定就保持默认。
+        </div>
         <div class="field">
           <label class="field-label">监听地址</label>
-          <input v-model="form.server.host" class="input" />
+          <!-- 锁定态直接显示环境变量里的真实取值：设置里那份可能是历史值，跟实际对不上 -->
+          <input v-if="hostLocked" class="input input--locked" :value="env?.hostEnv ?? ''" disabled />
+          <input v-else v-model="form.server.host" class="input" />
+          <div v-if="hostLocked" class="field-hint field-hint--warn">
+            实际生效值来自部署给的 <span class="mono">VS_HOST</span>，<strong>在这里改了不会生效</strong>。
+            要改得动 Docker 的 environment 后重建容器。
+          </div>
+          <div v-else class="field-hint">
+            容器内监听哪块网卡，默认 <span class="mono">0.0.0.0</span>（全都听）。<strong>一般不用改</strong>。
+          </div>
         </div>
         <div class="field">
           <label class="field-label">监听端口</label>
-          <input v-model.number="form.server.port" type="number" min="1" max="65535" class="input" />
+          <input
+            v-if="portLocked"
+            class="input input--locked"
+            :value="env?.portEnv ?? ''"
+            disabled
+          />
+          <input
+            v-else
+            v-model.number="form.server.port"
+            type="number"
+            min="1"
+            max="65535"
+            class="input"
+          />
+          <div v-if="portLocked" class="field-hint field-hint--warn">
+            实际生效值来自部署给的 <span class="mono">VS_PORT</span>，<strong>在这里改了不会生效</strong>。
+            想换访问端口就改 Docker 端口映射的<strong>宿主端口</strong>那一侧（如
+            <span class="mono">18099:{{ env?.portEnv }}</span>），容器内的不用动。
+          </div>
+          <div v-else class="field-hint">
+            容器内监听的端口。外部访问走的是 Docker 端口映射（如 <span class="mono">8099:8099</span>），
+            <span class="hl">两边必须一致</span> —— 只改这里而不同步改映射，控制台就打不开了。
+          </div>
         </div>
         <div class="field">
           <label class="field-label">任务日志保留行数</label>
-          <input v-model.number="form.server.jobLogLines" type="number" min="1" class="input" />
+          <input v-model.number="form.server.jobLogLines" type="number" min="100" max="100000" class="input" />
+          <div class="field-hint">
+            每个任务的日志最多留这么多行，超出丢掉最早的。范围 100 ~ 100000。
+          </div>
         </div>
 
         <!-- 只读：告诉用户「状态存在哪儿」，备份与迁移时才找得到 -->
@@ -367,13 +488,13 @@ async function doImport(): Promise<void> {
           <label class="field-label">数据目录（只读）</label>
           <input class="input" :value="env.dataDir" readonly />
           <div class="field-hint">
-            设置、监控目录列表、任务历史、失败清单、归档目录记录都在这个目录里。
-            它由 Docker 自己管理（卷 <strong>video-splitter-data</strong>），
-            不用配置、升级容器也不会丢；飞牛应用则固定在安装所在存储空间的
-            <strong>@appdata/video-splitter</strong>。备份用下面的「导出配置」，
-            要连任务历史一起搬才需要打包整个卷。
-            当前属主为 <strong>{{ env.uid }}:{{ env.gid }}</strong>，切片在文件管理里改不动时，
-            用它对照部署时填的 PUID / PGID。
+            设置、监控目录列表、任务历史、失败清单、归档目录记录都在这里。
+            它由 Docker 自己管理（卷 <span class="mono">video-splitter-data</span>），
+            <strong>不用配置、升级容器也不会丢</strong>；飞牛应用则固定在安装所在存储空间的
+            <span class="mono">@appdata/video-splitter</span>。
+            备份用下面的「导出配置」；要连任务历史一起搬，才需要打包整个卷。
+            当前属主为 <span class="mono">{{ env.uid }}:{{ env.gid }}</span> ——
+            切片在文件管理里改不动时，用它对照部署时填的 PUID / PGID。
           </div>
         </div>
       </div>
@@ -427,12 +548,44 @@ async function doImport(): Promise<void> {
         </div>
 
         <div class="field-hint backup-note">
-          导入会<strong>整体替换当前设置</strong>；监控目录按<strong>路径</strong>合并
+          导入会<span class="hl">整体替换当前设置</span>；监控目录按<strong>路径</strong>合并
           （已存在的更新成导入内容，没有的新增）；归档目录记录只增不减。
           路径不在容器已挂载目录内的监控目录会被跳过。<strong>视频文件本身不受影响。</strong>
         </div>
       </div>
     </template>
+
+    <!-- 开启「覆盖同名切片」前的二次确认：这是不可逆的，箭头必须停在「关」这一侧 -->
+    <Modal v-model="confirmOverwrite" title="确认开启覆盖">
+      <p>开启后，切分时遇到<strong>同名文件会直接覆盖</strong>，被覆盖的内容找不回来。</p>
+      <p>
+        同名切片多半是重复扫描造成的，那倒没关系；但如果那个名字下正好是你自己放进去的
+        文件，就一起没了。
+      </p>
+      <p>
+        保持关闭的话，一旦发现同名切片就<strong>中止这次切分</strong>，已有文件一个都不动，
+        等你确认后再处理 —— 稳妥得多。
+      </p>
+      <template #footer>
+        <button class="btn" @click="confirmOverwrite = false">保持关闭（推荐）</button>
+        <button class="btn btn--danger" @click="onOverwriteOk">仍然开启</button>
+      </template>
+    </Modal>
+
+    <!-- 改监听参数前的提醒：这一改当前网址就废了，事后才发现会很麻烦 -->
+    <Modal v-model="confirmServerChange" title="监听参数已改动">
+      <p>你改了服务的<strong>监听地址或端口</strong>，要重启服务才按新值监听。</p>
+      <p>
+        保存后<span class="hl">当前这个网址就失效了</span>，得用新地址访问控制台。
+        如果跑在 Docker 里，还要把端口映射改成一致的 —— 容器内监听的端口和外部映射对不上，
+        控制台就打不开。
+      </p>
+      <p>确认改对了再保存；改错了得进容器把配置改回来。</p>
+      <template #footer>
+        <button class="btn" @click="confirmServerChange = false">我再检查一下</button>
+        <button class="btn btn--primary" @click="onServerChangeOk">确认，仍要保存</button>
+      </template>
+    </Modal>
 
     <!-- 删除源文件二次确认 -->
     <Modal v-model="confirmDeleteSource" title="危险操作确认">
@@ -513,5 +666,12 @@ async function doImport(): Promise<void> {
   font-size: var(--font-size-sm);
   color: var(--color-text);
   word-break: break-all;
+}
+/* 被部署锁死的项（监听地址 / 端口）：灰底表示改不了，但字色不能跟着淡下去 ——
+   用户正是要看清「实际生效的是哪个值」 */
+.input--locked:disabled {
+  background: var(--color-surface-2);
+  color: var(--color-text-soft);
+  cursor: not-allowed;
 }
 </style>

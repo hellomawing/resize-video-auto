@@ -205,6 +205,26 @@ h4 {
 .field-hint {
   font-size: var(--font-size-xs);
   color: var(--color-text-faint);
+  line-height: 1.6;
+}
+/* hint 正文是淡灰的，里面的 <strong> 原来只加粗、颜色照样继承淡灰，
+   等于标了重点却看不出来 —— 既然标了就得让人看见，所以给个更深的字色。 */
+.field-hint strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+/* 行内高亮：hint 里真正要让人停下来看一眼的那几个词（不可逆 / 会失联之类）。
+   克制使用 —— 满屏都高亮就等于没有高亮。 */
+.hl {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-weight: 500;
+}
+.hl--danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
 }
 /* 提示里需要被看见的那种：当前选项有副作用、或某项设置不会生效 */
 .field-hint--warn {
@@ -212,6 +232,9 @@ h4 {
 }
 .field-hint--danger {
   color: var(--color-danger);
+}
+.mono {
+  font-family: var(--font-mono);
 }
 
 /* ---------- 表格 ---------- */

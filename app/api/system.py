@@ -362,4 +362,10 @@ def env_info() -> dict:
         ],
         "uid": os.getuid() if hasattr(os, "getuid") else None,
         "gid": os.getgid() if hasattr(os, "getgid") else None,
+        # 监听地址/端口是「环境变量优先于设置」（见 main.py 的启动逻辑），
+        # 而容器的 Dockerfile 已经固定了这两个变量 —— 也就是说设置页里改它们
+        # 根本不会生效。把变量的存在与取值透出去，界面据此把这两项标成只读，
+        # 免得给用户一个改了没反应、还让他以为改坏了的输入框。
+        "hostEnv": os.environ.get("VS_HOST") or None,
+        "portEnv": os.environ.get("VS_PORT") or None,
     }

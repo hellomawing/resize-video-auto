@@ -57,6 +57,13 @@ export interface EnvInfo {
   platform: string
   uid: number | null
   gid: number | null
+  /**
+   * 环境变量 VS_HOST / VS_PORT 的取值。
+   * 有值 = 监听地址/端口由部署（容器）锁死，设置页里改了不生效，
+   * 界面要把对应输入框置为只读并说明原因。
+   */
+  hostEnv: string | null
+  portEnv: string | null
 }
 
 export interface BrowseResult {
