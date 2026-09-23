@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from copy import deepcopy
 from pathlib import Path
@@ -290,6 +291,78 @@ def _normalize_scan_time(value) -> str:
     return DEFAULT_SCAN_TIME
 
 
+# ---------------------------------------------------------------- 过滤规则
+
+# 一条规则的两种写法，与 app/models.py 的 FilterMode 必须一致。
+#   contains 包含某串（忽略大小写）—— 常用的那种，用户不必学正则
+#   regex    正则表达式 —— 只有复杂规则才需要
+FILTER_MODES = ("contains", "regex")
+
+
+def _normalize_ext_list(raw) -> list:
+    """文件类型列表：小写、补点、只留引擎能无损切分的那些，去重且保持顺序。
+
+    「只留引擎支持的」是硬约束：库里写个 .avi 进去，扫描器放行、切分那一关
+    仍然会拦下来（本工具只做无损流拷贝），规则就成了看得见却不生效的死配置。
+    """
+    supported = set(engine.SUPPORTED_EXTS)
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        ext = str(item or "").strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        if ext in supported and ext not in out:
+            out.append(ext)
+    return out
+
+
+def _normalize_rules(raw, strict: bool = False) -> list:
+    """名字规则列表：丢掉空规则，正则必须能编译。
+
+    strict=True 时正则编不过直接抛 ValueError（API 入口用，让用户当场看到
+    是哪条写错了）；False 时静默丢掉那一条 —— 一个手改坏的正则不该让整个
+    监控目录读不出来，更重要的是不能让扫描因为规则解析失败而报错。
+    """
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        mode = str(item.get("mode") or "contains").strip().lower()
+        if mode not in FILTER_MODES:
+            mode = "contains"
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        if mode == "regex":
+            try:
+                re.compile(value)
+            except re.error as exc:
+                if strict:
+                    raise ValueError("正则表达式写错了「%s」：%s" % (value, exc))
+                continue
+        out.append({"mode": mode, "value": value})
+    return out
+
+
+def normalize_filters(raw, strict: bool = False) -> dict:
+    """归一化某个监控目录的过滤规则，返回落盘用的 dict（camelCase）。
+
+    排除优先于仅限：同一个类型两边都写了，仅限那一侧永远不可能生效，
+    这里直接从仅限里去掉 —— 留着只会让人对着界面想「为什么它没用」。
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    ext_include = _normalize_ext_list(raw.get("extInclude"))
+    ext_exclude = _normalize_ext_list(raw.get("extExclude"))
+    return {
+        "extInclude": [e for e in ext_include if e not in ext_exclude],
+        "extExclude": ext_exclude,
+        "nameInclude": _normalize_rules(raw.get("nameInclude"), strict),
+        "nameExclude": _normalize_rules(raw.get("nameExclude"), strict),
+    }
+
+
 def normalize_watchpoint(item: dict) -> dict:
     """
     补齐监控目录的字段并纠正脏值。
@@ -324,6 +397,9 @@ def normalize_watchpoint(item: dict) -> dict:
     raw_dir = out.get("sourceDir")
     out["sourceDir"] = (normalize_source_dir(raw_dir)
                         if isinstance(raw_dir, str) and raw_dir.strip() else "")
+    # 过滤规则：老监控目录没有这个键 -> 补成空规则 = 不过滤，
+    # 升级后行为与升级前完全一致（这是刻意的，不改变任何已有目录的扫描结果）
+    out["filters"] = normalize_filters(out.get("filters"))
     if not isinstance(out.get("note"), str):
         out["note"] = ""
     if not isinstance(out.get("path"), str):

@@ -146,6 +146,41 @@ class Settings(CamelModel):
 # 取值与 app/config.py 的 SCAN_MODES 必须一致，改这里要同步改那边。
 ScanMode = Literal["realtime", "interval", "daily", "manual"]
 
+# 过滤规则的写法：
+#   contains 包含某串（忽略大小写）—— 常用的那种，不用学正则
+#   regex    正则表达式 —— 复杂规则才需要
+# 取值与 app/services/filters.py 的 FILTER_MODES 一致，改一处要同步另一处。
+FilterMode = Literal["contains", "regex"]
+
+
+class FilterRule(CamelModel):
+    """一条「名字规则」。
+
+    它比对的是**文件自身名字 + 监控目录之下各级文件夹名**这每一段，
+    不含监控目录以上的路径 —— 与「归档目录排除」同一口径，
+    否则规则里写个 `1000` 会把 `/vol1/1000/...` 下的一切都命中。
+    """
+    mode: FilterMode = "contains"
+    value: str = ""
+
+
+class WatchFilters(CamelModel):
+    """某个监控目录自己的「只看这些 / 不看这些」规则。
+
+    为什么每个目录一套而不是全局一套：同一个人可能既想监控「相机导入」
+    （只认 mp4），又想监控「录制」目录（排队剔除试拍的花絮）。全局一套
+    等于逼用户为不同目录建不同的库。
+
+    空 = 不过滤（所以老监控目录零迁移成本，行为与升级前完全一致）。
+    排除优先于仅限：同时命中时一律排除。
+    """
+    # 文件类型：取值范围必须是「引擎能无损切分的格式」（engine.SUPPORTED_EXTS），
+    # 界面上的候选则进一步收窄到系统设置里已启用的那几种
+    ext_include: list[str] = Field(default_factory=list)
+    ext_exclude: list[str] = Field(default_factory=list)
+    name_include: list[FilterRule] = Field(default_factory=list)
+    name_exclude: list[FilterRule] = Field(default_factory=list)
+
 
 class WatchPoint(CamelModel):
     id: str
@@ -159,6 +194,7 @@ class WatchPoint(CamelModel):
     mark_source: str = ""
     source_dir: str = ""
     note: str = ""
+    filters: WatchFilters = Field(default_factory=WatchFilters)
     created_at: str = ""
     last_scan_at: Optional[str] = None
     # 下次自动扫描时间；实时监听与仅手动没有「下次」，返回 None
@@ -175,6 +211,7 @@ class WatchPointCreate(CamelModel):
     mark_source: str = ""
     source_dir: str = ""
     note: str = ""
+    filters: WatchFilters = Field(default_factory=WatchFilters)
 
 
 class WatchPointUpdate(CamelModel):
@@ -186,6 +223,9 @@ class WatchPointUpdate(CamelModel):
     mark_source: Optional[str] = None
     source_dir: Optional[str] = None
     note: Optional[str] = None
+    # 整块替换：传 {} 就是「清空全部规则，回到不过滤」。
+    # 不用 None 表达清空，理由与 markSource 那两项相同 —— 两者语义不同。
+    filters: Optional[WatchFilters] = None
 
 
 class IgnoredFile(CamelModel):

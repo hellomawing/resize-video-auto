@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..services import filters as filter_rules
 from ..services import scanner
 from ..services.events import bus
 from core import splitter as engine
@@ -227,16 +228,20 @@ class MonitorService:
                 self._pending.pop(p, None)
 
         # 归档目录判断要用「该文件属于哪个监控目录」当扫描根，把路径切成
-        # 根之下的部分再比（见 engine.is_in_archive_dir）。待检队列通常只有
-        # 个位数，每个 tick 读一遍配置就够了。
-        roots = {w.get("id"): w.get("path")
-                 for w in config.load_watchpoints()}
+        # 根之下的部分再比（见 engine.is_in_archive_dir）。过滤规则同理。
+        # 待检队列通常只有个位数，每个 tick 读一遍配置就够了。
+        wps = config.load_watchpoints()
+        roots = {w.get("id"): w.get("path") for w in wps}
+        # 规则每轮编译一次（条数很少），别在每个文件上重复编译同一批正则
+        wfilters = {w.get("id"): filter_rules.compile_filters(w.get("filters"))
+                    for w in wps}
 
         for path, wp_id in due:
             try:
                 root = roots.get(wp_id)
                 status, reason = scanner.consider_file(
-                    path, spec, "watch", wp_id, roots=[root] if root else None)
+                    path, spec, "watch", wp_id, roots=[root] if root else None,
+                    compiled_filters=wfilters.get(wp_id))
             except Exception as exc:                  # noqa: BLE001
                 _log("检查 %s 出错：%s" % (path, exc))
                 continue

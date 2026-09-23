@@ -28,6 +28,7 @@ from collections import Counter
 from pathlib import Path
 
 from .. import config, db
+from . import filters as filter_rules
 from ..services import queue as job_queue
 from core import splitter as engine
 
@@ -143,10 +144,28 @@ def _unchanged_since_failure(path: Path, size: int, failed: dict) -> bool:
     return abs(mtime - float(failed.get("mtime") or 0)) < 0.001
 
 
+def _relative_parts(path: Path, roots) -> tuple:
+    """把路径切成「相对于扫描根」的段；拿不到根时只用文件名一段。
+
+    过滤规则只比对监控目录之下的部分 —— 拿整条路径去比的话，
+    `/vol1/1000/...` 里的 `1000` 会命中用户写的规则，而那种误伤极难排查。
+    理由与 engine.is_in_archive_dir 相同。
+    """
+    for base in roots or ():
+        if not base:
+            continue
+        try:
+            return Path(path).relative_to(Path(base)).parts
+        except ValueError:
+            continue
+    return (Path(path).name,)
+
+
 def consider_file(path, spec: dict, trigger: str,
                   watchpoint_id: str = None,
                   mark_override: dict = None,
-                  roots=None) -> tuple[str, str]:
+                  roots=None,
+                  compiled_filters: dict = None) -> tuple[str, str]:
     """
     判断单个文件该不该入队，返回 (结果, 说明)。
     结果取值：queued / waiting / skipped / duplicate
@@ -155,8 +174,13 @@ def consider_file(path, spec: dict, trigger: str,
     方式处理原片」，只影响本次入队的任务。
 
     roots 是本次的扫描根，归档目录判断要用它把路径切成「根之下」的部分
-    （见 engine.is_in_archive_dir）。实时监听那条路上每个文件都有各自的
-    监控目录，所以是列表；不传则按保守方式判断。
+    （见 engine.is_in_archive_dir），过滤规则也靠它拿到相对路径段。
+    实时监听那条路上每个文件都有各自的监控目录，所以是列表；
+    不传则按保守方式判断。
+
+    compiled_filters 是该监控目录的过滤规则（`filter_rules.compile_filters`
+    的产物）。实时监听那条路不经过 collect_files，必须在这里补一道，
+    否则「实时」会绕过用户在界面上配的规则。
     """
     path = Path(path)
     try:
@@ -172,6 +196,11 @@ def consider_file(path, spec: dict, trigger: str,
         if any(engine.is_in_archive_dir(path, b, spec["archive_dirs"])
                for b in bases):
             return "skipped", "位于原片归档目录"
+        if compiled_filters is not None:
+            reason = filter_rules.explain(compiled_filters, path,
+                                          _relative_parts(path, roots))
+            if reason:
+                return "skipped", reason
         if path.suffix.lower() in spec["ignore_suffixes"]:
             return "skipped", "临时文件后缀"
         size = path.stat().st_size
@@ -312,17 +341,23 @@ def _scan_message(found: int, queued: int, waiting: int, skipped: int,
 
 
 def scan_paths(paths, trigger: str, watchpoint_id: str = None,
-               respect_settle: bool = True, mark_override: dict = None) -> dict:
+               respect_settle: bool = True, mark_override: dict = None,
+               filters: dict = None) -> dict:
     """扫描若干目录并入队，返回统计结果。
 
     mark_override 是「就这一次」的原片处理方式（手动扫描时前端传进来的，
     camelCase 键），只作用于本次入队的任务，不写回任何配置。
+
+    filters 是**被扫描那个监控目录自己的过滤规则**（原始 dict，见
+    app/services/filters.py）。不传 = 完全不过滤，走原来的遍历路径，
+    行为与升级前逐字一致。
     """
     settings = config.load_settings()
     extra = [mark_override.get("sourceDir")] if mark_override else None
     spec = build_spec(settings, extra_archive_dirs=extra)
     if not respect_settle:
         spec["settle"] = 0
+    file_filter, dir_filter = filter_rules.build_matchers(filters)
 
     valid_dirs = []
     for raw in paths:
@@ -351,7 +386,8 @@ def scan_paths(paths, trigger: str, watchpoint_id: str = None,
         raw_skips.append((Path(path), reason))
 
     files = engine.collect_files(valid_dirs, spec["exts"], spec["recursive"],
-                                spec["archive_dirs"], on_skip=_note_skip)
+                                spec["archive_dirs"], on_skip=_note_skip,
+                                file_filter=file_filter, dir_filter=dir_filter)
 
     queued = waiting = skipped = 0
     details = []
@@ -387,7 +423,10 @@ def scan_watchpoint(watchpoint: dict, trigger: str = "manual",
     """扫描单个监控目录，并回写它的 lastScanAt / videoCount。"""
     result = scan_paths([watchpoint["path"]], trigger,
                         watchpoint_id=watchpoint.get("id"),
-                        mark_override=mark_override)
+                        mark_override=mark_override,
+                        # 该目录自己的过滤规则：轮询兜底（monitor._poll）也走
+                        # 这个函数，所以这里的传入同时覆盖了手动扫描与自动轮询
+                        filters=watchpoint.get("filters"))
     watchpoints = config.load_watchpoints()
     for wp in watchpoints:
         if wp.get("id") == watchpoint.get("id"):

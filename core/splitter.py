@@ -1116,7 +1116,45 @@ def is_in_archive_dir(path, base, names) -> bool:
     return any(part in names for part in rel.parts[:-1])
 
 
-def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
+def _walk_filtered(base: Path, recursive: bool, dir_filter):
+    """
+    自己递归遍历，产出 (文件路径, 相对 base 的路径段)。
+
+    只有配了过滤规则时才会走到这里（见 collect_files）。为什么要另写一套而
+    不用 rglob：rglob 没法剪枝 —— 命中排除规则的目录它照样整棵走完，而存储池
+    上那可能是几十万个条目。手写递归能在**进入之前**就决定不进。
+
+    符号链接的处理刻意与 rglob(recurse_symlinks=False) 对齐：指向目录的链接
+    不跟随，指向文件的链接照常收。
+    """
+    def _recur(current: Path, rel: tuple):
+        try:
+            with os.scandir(current) as it:
+                entries = list(it)
+        except OSError:
+            # 权限不够（fnOS 的 /vol1 就是 000）或竞态删除：跳过这一层，
+            # 别让整次扫描因为一个目录读不动而中断
+            return
+        for entry in entries:
+            try:
+                is_link = entry.is_symlink()
+                if entry.is_dir() and not is_link:
+                    if not recursive:
+                        continue
+                    child = rel + (entry.name,)
+                    if dir_filter is not None and dir_filter(child):
+                        continue
+                    yield from _recur(Path(entry.path), child)
+                elif entry.is_file():
+                    yield Path(entry.path), rel + (entry.name,)
+            except OSError:
+                continue
+
+    yield from _recur(Path(base), ())
+
+
+def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None,
+                  file_filter=None, dir_filter=None):
     """
     扫描目录下的视频文件，自动跳过自己的产物和归档目录。
 
@@ -1128,39 +1166,68 @@ def collect_files(folders, exts, recursive: bool, skip_dirs=(), on_skip=None):
     界面却说「没有发现需要处理的视频」，用户只能靠猜。把这个信息如实带出去，
     用户才分得清「真的没有」和「被有意跳过了」。不传时行为和以前完全一致，
     命令行那条路不受任何影响。
+
+    后两个参数是**某个监控目录自己的过滤规则**（实现见 app/services/filters）：
+
+        file_filter(path, rel_parts) 返回非空原因 -> 这个文件按规则不处理，
+            原因交给 on_skip 报到界面（用户要看得见「是被规则挡了」，
+            而不是以为规则没生效）
+        dir_filter(rel_parts) 为真 -> 整棵子树跳过
+
+    两者**默认都不传**，此时走原来的 rglob / glob，一分额外开销都没有，
+    行为与升级前逐字一致。带 dir_filter 时改用 _walk_filtered 自己递归，
+    把新代码的影响面限制在「真的配了规则」这条路上。
     """
     files, seen = [], set()
+
+    def _accept(p, base, rel_parts) -> None:
+        """按既有顺序判断一个候选文件，收下就放进 files。"""
+        try:
+            if not p.is_file() or p.suffix.lower() not in exts:
+                return
+            if is_internal_temp(p):
+                # 切分中途的临时分段，不是用户的文件，也没必要惊动 on_skip
+                return
+            kind = classify_own_product(p)
+            if kind:
+                # 报出具体是哪一种：上层要据此判断「切片还在不在」，
+                # 光知道「是我的产物」判断不了目录当前是什么状态
+                if on_skip:
+                    on_skip(p, SKIP_REASON[kind])
+                return
+            if is_in_archive_dir(p, base, skip_dirs):
+                if on_skip:
+                    on_skip(p, "位于原片归档目录")
+                return
+            if file_filter is not None:
+                reason = file_filter(p, rel_parts)
+                if reason:
+                    if on_skip:
+                        on_skip(p, reason)
+                    return
+            rp = p.resolve()
+            if rp in seen:
+                return
+            seen.add(rp)
+            files.append(p)
+        except Exception:
+            return
+
     for folder in folders:
         base = Path(folder)
         if not base.is_dir():
             log("  [跳过] 不是文件夹：%s" % base)
             continue
-        it = base.rglob("*") if recursive else base.glob("*")
-        for p in it:
-            try:
-                if not p.is_file() or p.suffix.lower() not in exts:
-                    continue
-                if is_internal_temp(p):
-                    # 切分中途的临时分段，不是用户的文件，也没必要惊动 on_skip
-                    continue
-                kind = classify_own_product(p)
-                if kind:
-                    # 报出具体是哪一种：上层要据此判断「切片还在不在」，
-                    # 光知道「是我的产物」判断不了目录当前是什么状态
-                    if on_skip:
-                        on_skip(p, SKIP_REASON[kind])
-                    continue
-                if is_in_archive_dir(p, base, skip_dirs):
-                    if on_skip:
-                        on_skip(p, "位于原片归档目录")
-                    continue
-                rp = p.resolve()
-                if rp in seen:
-                    continue
-                seen.add(rp)
-                files.append(p)
-            except Exception:
-                continue
+
+        if file_filter is None and dir_filter is None:
+            it = base.rglob("*") if recursive else base.glob("*")
+            for p in it:
+                _accept(p, base, None)
+            continue
+
+        for p, rel_parts in _walk_filtered(base, recursive, dir_filter):
+            _accept(p, base, rel_parts)
+
     return files
 
 

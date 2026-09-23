@@ -5,11 +5,10 @@ import DataTable from '../components/DataTable.vue'
 import Toggle from '../components/Toggle.vue'
 import Modal from '../components/Modal.vue'
 import EmptyState from '../components/EmptyState.vue'
-import DirPicker from '../components/DirPicker.vue'
 import ScanModePicker from '../components/ScanModePicker.vue'
 import MarkSourcePicker from '../components/MarkSourcePicker.vue'
 import OriginRescueModal from '../components/OriginRescueModal.vue'
-import { listWatchpoints, createWatchpoint, updateWatchpoint, deleteWatchpoint, scanWatchpoint } from '../api/watchpoints'
+import { listWatchpoints, deleteWatchpoint, scanWatchpoint, updateWatchpoint } from '../api/watchpoints'
 import { getSettings } from '../api/settings'
 import { useToast } from '../composables/useToast'
 import { useScanRescue } from '../composables/useScanRescue'
@@ -17,39 +16,17 @@ import { useScanOverride } from '../composables/useScanOverride'
 import { describeMark } from '../composables/useMarkSource'
 import { formatDateTime } from '../composables/useFormat'
 import type {
+  FilterRule,
   MarkValue,
   ScanMode,
   ScanOptions,
   ScanResult,
   WatchPoint,
-  WatchPointCreate,
 } from '../api/types'
 
 const toast = useToast()
 const rescue = useScanRescue()
 const router = useRouter()
-
-interface FormState {
-  path: string
-  recursive: boolean
-  scanMode: ScanMode
-  scanIntervalHours: number
-  scanTime: string
-  /** 原片处理方式。空串 = 跟随系统设置，这是有意的未设置状态 */
-  markSource: MarkValue
-  sourceDir: string
-  note: string
-}
-const emptyForm = (): FormState => ({
-  path: '',
-  recursive: true,
-  scanMode: 'realtime',
-  scanIntervalHours: 6,
-  scanTime: '03:00',
-  markSource: '',
-  sourceDir: '',
-  note: '',
-})
 
 const list = ref<WatchPoint[]>([])
 const loading = ref(true)
@@ -64,11 +41,6 @@ const systemSourceDir = ref('')
 const followDetail = computed(() =>
   systemMark.value ? describeMark(systemMark.value, systemSourceDir.value) : '',
 )
-
-const formOpen = ref(false)
-const editingId = ref<string | null>(null)
-const form = ref<FormState>(emptyForm())
-const saving = ref(false)
 
 const deleteTarget = ref<WatchPoint | null>(null)
 
@@ -99,68 +71,38 @@ async function load(): Promise<void> {
   }
 }
 
+/**
+ * 新增 / 编辑都去**独立页面**。内容里有一整块过滤规则（只看/不看哪些类型与名字），
+ * 弹窗装不下 —— 详见表单页自己的说明。路径也不再在这里改。
+ */
 function openAdd(): void {
-  editingId.value = null
-  form.value = emptyForm()
-  formOpen.value = true
+  void router.push('/watch/new')
 }
 
 function openEdit(wp: WatchPoint): void {
-  editingId.value = wp.id
-  form.value = {
-    path: wp.path,
-    recursive: wp.recursive,
-    scanMode: wp.scanMode,
-    scanIntervalHours: wp.scanIntervalHours,
-    scanTime: wp.scanTime,
-    markSource: wp.markSource,
-    sourceDir: wp.sourceDir,
-    note: wp.note,
-  }
-  formOpen.value = true
+  void router.push(`/watch/edit/${wp.id}`)
 }
 
-async function save(): Promise<void> {
-  // 新增必须先选目录（弹窗里没有可直接输入的路径）
-  if (!editingId.value && !form.value.path) {
-    toast.error('请先选择监控目录')
-    return
-  }
-  saving.value = true
-  try {
-    if (editingId.value) {
-      const updated = await updateWatchpoint(editingId.value, {
-        recursive: form.value.recursive,
-        scanMode: form.value.scanMode,
-        scanIntervalHours: form.value.scanIntervalHours,
-        scanTime: form.value.scanTime,
-        markSource: form.value.markSource,
-        sourceDir: form.value.sourceDir,
-        note: form.value.note,
-      })
-      replaceRow(updated)
-      toast.success('已保存监控目录设置')
-    } else {
-      const body: WatchPointCreate = {
-        path: form.value.path,
-        recursive: form.value.recursive,
-        scanMode: form.value.scanMode,
-        scanIntervalHours: form.value.scanIntervalHours,
-        scanTime: form.value.scanTime,
-        markSource: form.value.markSource,
-        sourceDir: form.value.sourceDir,
-        note: form.value.note,
-      }
-      await createWatchpoint(body)
-      toast.success(`已添加监控目录：${form.value.path}`)
-    }
-    formOpen.value = false
-    await load()
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
-  } finally {
-    saving.value = false
-  }
+/** 规则的简短写法：正则用 /…/ 包起来，好和「包含」区分 */
+function ruleText(rule: FilterRule): string {
+  return rule.mode === 'regex' ? `/${rule.value}/` : rule.value
+}
+
+/**
+ * 表格「过滤」列：一句话说清这个目录配了什么规则。
+ * 空规则 = 不过滤，显示「—」而不是留白 —— 留白会让人以为是没加载出来。
+ */
+function filterSummary(wp: WatchPoint): string {
+  const f = wp.filters
+  if (!f) return '—'
+  const parts: string[] = []
+  if (f.extInclude?.length) parts.push('仅 ' + f.extInclude.join(' '))
+  if (f.extExclude?.length) parts.push('排除 ' + f.extExclude.join(' '))
+  const inc = (f.nameInclude || []).filter((r) => r.value.trim())
+  const exc = (f.nameExclude || []).filter((r) => r.value.trim())
+  if (inc.length) parts.push('仅 ' + inc.map(ruleText).join('、'))
+  if (exc.length) parts.push('排除 ' + exc.map(ruleText).join('、'))
+  return parts.length ? parts.join(' · ') : '—'
 }
 
 function replaceRow(updated: WatchPoint): void {
@@ -288,19 +230,12 @@ function nextScanText(wp: WatchPoint): string {
   return formatDateTime(wp.nextScanAt)
 }
 
-/** 表头说明：一个目录当前是「自动」还是「手动」，一眼能看出来。 */
-function modeHint(mode: ScanMode): string {
-  if (mode === 'realtime') return '文件落进目录就会被发现并自动切分'
-  if (mode === 'interval') return '按固定间隔扫一次，适合边传边等的场景'
-  if (mode === 'daily') return '每天固定时间扫一次，适合夜间批处理'
-  return '不自动扫描，只在你点「扫描」时才处理'
-}
-
 onMounted(load)
 
 const columns = [
   { key: 'path', label: '路径' },
   { key: 'recursive', label: '递归', width: '80px' },
+  { key: 'filters', label: '过滤', width: '220px' },
   { key: 'scanMode', label: '扫描方式', width: '290px' },
   { key: 'markSource', label: '原片处理', width: '250px' },
   { key: 'lastScanAt', label: '上次扫描', width: '170px' },
@@ -354,6 +289,7 @@ const columns = [
         <tr v-for="wp in list" :key="wp.id">
           <td class="text-ellipsis" :title="wp.path">{{ wp.path }}</td>
           <td><Toggle :model-value="wp.recursive" @update:model-value="() => toggleRecursive(wp)" /></td>
+          <td class="text-ellipsis" :title="filterSummary(wp)">{{ filterSummary(wp) }}</td>
           <td>
             <ScanModePicker
               :scan-mode="wp.scanMode"
@@ -398,63 +334,8 @@ const columns = [
       自动扫描只是帮你省掉这一下点击，两者互不影响。
     </p>
 
-    <!-- 新增 / 编辑 -->
-    <Modal v-model="formOpen" :title="editingId ? '编辑监控目录' : '新增监控目录'">
-      <div class="field">
-        <label class="field-label">目录路径</label>
-        <!-- 新增：行内三步走（选存储位置 → 选使用方式 → 需要时挑子文件夹），
-             不再「弹窗里再开弹窗」；最终会监控哪个路径由组件自己回填。
-             编辑：路径不可改（后端也不支持改路径），只如实展示 -->
-        <div v-if="editingId" class="picked-path">
-          <span class="picked-icon">📁</span>
-          <span class="picked-text">{{ form.path }}</span>
-        </div>
-        <DirPicker v-else v-model="form.path" :active="formOpen" />
-      </div>
-      <div class="field">
-        <label class="field-label">扫描方式</label>
-        <ScanModePicker
-          v-model:scan-mode="form.scanMode"
-          v-model:scan-interval-hours="form.scanIntervalHours"
-          v-model:scan-time="form.scanTime"
-        />
-        <div class="field-hint">{{ modeHint(form.scanMode) }}</div>
-      </div>
-      <div class="field">
-        <label class="field-label">递归子目录</label>
-        <Toggle v-model="form.recursive" />
-        <div class="field-hint">开启后会一并扫描该目录下的所有子目录</div>
-      </div>
-      <div class="field">
-        <label class="field-label">原片处理方式</label>
-        <MarkSourcePicker
-          v-model="form.markSource"
-          v-model:source-dir="form.sourceDir"
-          :follow-detail="followDetail"
-        />
-        <div class="field-hint">
-          切分成功后怎么处置原片。留「跟随系统设置」就按系统设置里的默认值来；
-          这里设了就以这里为准。
-        </div>
-      </div>
-      <div class="field">
-        <label class="field-label">备注</label>
-        <input v-model="form.note" class="input" placeholder="如：相机导入目录" />
-      </div>
-
-      <template #footer>
-        <!-- 新增时把「最终会监控哪个路径」摆在固定区里：内容区可能已经滚走，
-             路径又长又难核对。这里只许省略号截断，绝不许把按钮顶出弹窗 -->
-        <span v-if="!editingId" class="foot-path faint" :title="form.path">
-          将监控：{{ form.path || '（尚未选择）' }}
-        </span>
-        <button class="btn" @click="formOpen = false">取消</button>
-        <button class="btn btn--primary" :disabled="saving" @click="save">
-          <span v-if="saving" class="spinner" /> 保存
-        </button>
-      </template>
-    </Modal>
-
+    <!-- 新增 / 编辑都在独立页面（/watch/new 与 /watch/edit/:id）：
+         过滤规则那一整块塞不进弹窗，路径也会被滚出视野 -->
     <!-- 删除确认 -->
     <Modal :model-value="deleteTarget !== null" title="移除监控目录" @update:model-value="(v) => { if (!v) deleteTarget = null }">
       <p>
@@ -501,38 +382,6 @@ const columns = [
 </template>
 
 <style scoped>
-/* 已选目录的展示块：选完把路径摆出来，比一个填不进去的输入框有用 */
-.picked-path {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-primary-soft);
-}
-.picked-icon {
-  flex-shrink: 0;
-}
-.picked-text {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--font-size-sm);
-  word-break: break-all;
-}
-/*
- * 弹窗底部那行「将监控 …」。它是 flex 子项，必须 min-width: 0 + 省略号，
- * 否则一条几十字符的长路径会把它撑到弹窗外，把「取消 / 保存」一起顶出去。
- */
-.foot-path {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  font-size: var(--font-size-xs);
-}
 .card-loading {
   display: flex;
   align-items: center;

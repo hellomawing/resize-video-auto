@@ -45,6 +45,21 @@ def _apply(watchpoints: list) -> None:
     scheduler.reload_watchpoint_jobs()
 
 
+def _validated_filters(payload) -> dict:
+    """
+    归一化请求里的过滤规则，写错了当场 400。
+
+    为什么要在这儿严格校验、而不是丢给落盘时的容错归一化：正则写错是**用户
+    当场能改**的问题，静默丢掉那一行会让他以为规则生效了，结果文件照旧被切。
+    落盘那一层仍然保留静默剔除（防手工改坏配置文件），两层各管一件事。
+    """
+    raw = payload.model_dump(by_alias=True) if payload is not None else {}
+    try:
+        return config.normalize_filters(raw, strict=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("", response_model=list[WatchPoint])
 def list_watchpoints() -> list:
     return [_to_model(wp) for wp in config.load_watchpoints()]
@@ -71,6 +86,8 @@ def create_watchpoint(payload: WatchPointCreate) -> WatchPoint:
         "markSource": payload.mark_source or "",
         "sourceDir": payload.source_dir or "",
         "note": payload.note or "",
+        # 只看这些 / 不看这些（空 = 不过滤）。规则写错在这里就 400
+        "filters": _validated_filters(payload.filters),
         "createdAt": db.now_iso(),
         "lastScanAt": None,
         "videoCount": 0,
@@ -101,6 +118,10 @@ def update_watchpoint(wp_id: str, payload: WatchPointUpdate) -> WatchPoint:
         item["sourceDir"] = payload.source_dir
     if payload.note is not None:
         item["note"] = payload.note
+    # 过滤规则整块替换：传 {} 就是「清空全部规则，回到不过滤」。
+    # 不用 None 表达清空，理由与 markSource 那两项相同 —— 两者语义不同
+    if payload.filters is not None:
+        item["filters"] = _validated_filters(payload.filters)
 
     _apply(watchpoints)
     # 回读一次：保存时会顺手纠正非法值（比如填了个 7 小时），

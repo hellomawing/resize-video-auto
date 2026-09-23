@@ -19,6 +19,7 @@ export const updateWatchpoint = (
       | 'markSource'
       | 'sourceDir'
       | 'note'
+      | 'filters'
     >
   >,
 ): Promise<WatchPoint> => request<WatchPoint>(`/watchpoints/${id}`, { method: 'PUT', body })

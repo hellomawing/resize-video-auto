@@ -297,6 +297,12 @@ body 就是上面那份 JSON，返回导入结果：
   "markSource": "",
   "sourceDir": "",
   "note": "相机导入目录",
+  "filters": {
+    "extInclude": [".mp4"],
+    "extExclude": [".ts"],
+    "nameInclude": [ { "mode": "contains", "value": "相机" } ],
+    "nameExclude": [ { "mode": "regex", "value": "^花絮" } ]
+  },
   "createdAt": "2026-09-20T12:00:00+08:00",
   "lastScanAt": null,
   "nextScanAt": null,
@@ -306,6 +312,65 @@ body 就是上面那份 JSON，返回导入结果：
 
 - `markSource` / `sourceDir`：这个目录自己的原片处理方式，**空串 = 跟随系统设置**。
   详见 [原片处理方式](#3-原片处理方式marksource)。
+- `filters`：这个目录自己的「只看这些 / 不看这些」，见下一节。
+
+### 过滤规则 `filters`
+
+只影响**这个目录下哪些文件会被送进队列**，与系统设置里的 `split.ext`
+互相独立：两边都通过的文件才会被处理。被规则挡下的文件不会消失，
+会出现在 `ScanResult.ignored` 里（`reason` 写明是哪一类规则挡的）。
+
+```json
+{
+  "extInclude": [".mp4", ".mkv"],
+  "extExclude": [".ts"],
+  "nameInclude": [ { "mode": "contains", "value": "相机" } ],
+  "nameExclude": [ { "mode": "regex", "value": "^花絮" } ]
+}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `extInclude` | 只处理这些类型。空数组 = 不限制 |
+| `extExclude` | 不要这些类型 |
+| `nameInclude` | 只处理「名字命中这些规则」的文件 / 文件夹。空数组 = 不限制 |
+| `nameExclude` | 命中这些规则的文件 / 文件夹一律不用 |
+
+- **一条规则都没有 = 不过滤**，老监控目录升级后行为一字不变。
+- **排除优先于仅限**：同时命中时一律排除，没有可配置的余地 ——
+  和安全相关的判断（归档目录排除、跳过自己的产物）都朝同一个方向偏。
+- **`extInclude` / `extExclude` 的取值必须是 `engine.SUPPORTED_EXTS`**（引擎能
+  无损切分的那 8 种）。写别的会被 normalize 丢掉：那类文件扫描放行了、
+  切分那一关照样拦下，留着只是让人对着界面想「为什么这条没用」。
+  界面上可选的候选还要再窄一层，只列「设置 → 处理的扩展名」里已启用的。
+- 同一个类型同时出现在 `extInclude` 与 `extExclude` 里时，落盘时会从
+  `extInclude` 中移除（排除优先，那一侧是死配置）。
+- **规则的比对对象是「文件 / 文件夹的名字」**：文件自身的名字（**含扩展名**）
+  加上它到监控目录之间各级文件夹的名字，**不含监控目录以上的路径**。
+  口径与 [归档目录的排除](#归档目录的排除) 一致 —— 拿整条绝对路径去比的话，
+  `/vol1/1000/...` 里的 `1000` 会命中用户写的规则，而那种误伤极难排查。
+  于是「仅限」一条规则同时覆盖两种诉求：
+
+  | 规则 | `相机导入/2026/a.mp4` | `其他/相机花絮.mp4` | `其他/a.mp4` |
+  |---|---|---|---|
+  | `包含 相机` | 通过（父文件夹命中） | 通过（文件名命中） | 不用（哪一段都没命中） |
+
+- 规则的两种写法 `mode`：
+
+  | `mode` | 说明 |
+  |---|---|
+  | `contains` | 包含某串，**忽略大小写**。常用的那种，不必为了「含 XX 字符」去学正则 |
+  | `regex` | 正则表达式，按你写的原样生效（要忽略大小写自己写 `(?i)`） |
+
+  比对的是**完整名字、含扩展名**，所以 `^DJI_\d{4}$` 是**不命中**
+  `DJI_0002.mp4` 的，得写成 `^DJI_\d{4}\.mp4$`。
+- **正则写错了会当场 400**（`POST` / `PUT` 都是），文案指出是哪一条：
+  静默丢掉那一行会让人以为规则生效了，结果文件照旧被切。读盘那一层仍然
+  保留静默剔除（手改坏配置文件不至于让整个监控目录读不出来），两层各管一件事。
+- **命中 `nameExclude` 的目录整棵不进入**：纯性能优化 —— 里面每个文件的相对
+  路径都含这个目录名，逐个判断也是同样的结论，只是要白白 readdir 一整棵子树
+  （存储池上可能是几十万个条目）。「仅限」规则**不剪枝**：子目录名没命中，
+  不代表它下面没有命中的文件。
 
 ### 扫描方式 `scanMode`
 
@@ -342,8 +407,8 @@ body 就是上面那份 JSON，返回导入结果：
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/watchpoints` | 列表，返回 `[WatchPoint]` |
-| POST | `/api/watchpoints` | body `{path, recursive, scanMode, scanIntervalHours, scanTime, markSource, sourceDir, note}` |
-| PUT | `/api/watchpoints/{id}` | 局部更新（上表除 `path`/`id` 外的字段均可） |
+| POST | `/api/watchpoints` | body `{path, recursive, scanMode, scanIntervalHours, scanTime, markSource, sourceDir, note, filters}` |
+| PUT | `/api/watchpoints/{id}` | 局部更新（上表除 `path`/`id` 外的字段均可）。`filters` 是**整块替换**：传 `{}` = 清空全部规则（不是「不改」）；不改它就别传 |
 | DELETE | `/api/watchpoints/{id}` | 删除（想让它别再自动扫请改 `scanMode`，不必删除） |
 | POST | `/api/watchpoints/{id}/scan` | **立即扫描一次**，返回 `ScanResult`（见下），可带 `ScanIn` |
 

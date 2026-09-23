@@ -133,6 +133,40 @@ export interface Settings {
 // 扫描方式：realtime 实时监听 | interval 每隔 N 小时 | daily 每天 HH:MM | manual 仅手动
 export type ScanMode = 'realtime' | 'interval' | 'daily' | 'manual'
 
+// ---- 监控目录的过滤规则 ----
+/**
+ * 一条规则的两种写法：
+ *   contains 包含某串（忽略大小写）—— 常用的那种，不必为了「含 XX 字符」去学正则
+ *   regex    正则表达式 —— 只有复杂规则才需要，按你写的原样生效（要忽略大小写自己加 (?i)）
+ */
+export type FilterMode = 'contains' | 'regex'
+
+export interface FilterRule {
+  mode: FilterMode
+  value: string
+}
+
+/**
+ * 某个监控目录自己的「只看这些 / 不看这些」。
+ *
+ * 比对对象是**文件 / 文件夹的完整名字（含扩展名）**，以及该文件到监控目录
+ * 之间各级文件夹的名字 —— 不含监控目录以上的路径。所以规则「包含 相机」
+ * 既能命中「相机导入/2026/a.mp4」（父文件夹命中），也能命中「SONY-相机.mp4」
+ * （文件名命中），但不会因为路径上游是 /vol1/1000 而被误命中。
+ *
+ * 空数组 = 该项不限制；排除优先于仅限（同时命中时一律排除）。
+ */
+export interface WatchFilters {
+  /** 只处理这些类型，空 = 不限。取值必须是引擎能无损切分的格式 */
+  extInclude: string[]
+  /** 不要这些类型 */
+  extExclude: string[]
+  /** 只处理命中这些规则的文件/文件夹，空 = 不限 */
+  nameInclude: FilterRule[]
+  /** 命中这些规则的文件/文件夹一律不用 */
+  nameExclude: FilterRule[]
+}
+
 export interface WatchPoint {
   id: string
   path: string
@@ -147,6 +181,7 @@ export interface WatchPoint {
   markSource: MarkValue
   sourceDir: string
   note: string
+  filters: WatchFilters
   createdAt: string
   lastScanAt: string | null
   nextScanAt: string | null
@@ -162,6 +197,7 @@ export interface WatchPointCreate {
   markSource: MarkValue
   sourceDir: string
   note: string
+  filters: WatchFilters
 }
 
 /**
