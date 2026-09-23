@@ -114,11 +114,28 @@ function manualSnapshot(tab: TabKey): string {
   return JSON.stringify(picked)
 }
 
-/** 保存成功后以服务端返回的值为新基准；调用时机必须在 form 已被回填之后 */
-function resetBaseline(): void {
-  const next = {} as Record<TabKey, string>
-  for (const t of TABS) next[t.key] = manualSnapshot(t.key)
+/**
+ * 刷新「已落盘」基准快照。
+ * 传 tab：只重置这一栏（保存成功后调用）—— 别的分栏里没提交的输入
+ * 不能被顺手当成基准，否则那些输入会被悄悄标记成「已保存」。
+ * 不传：全部重置（只在整页加载后用）。
+ */
+function resetBaseline(tab?: TabKey): void {
+  const keys = tab ? [tab] : TABS.map((t) => t.key)
+  const next = { ...baseline.value }
+  for (const k of keys) next[k] = manualSnapshot(k)
   baseline.value = next
+  // 基准刷新后这一栏（或全部）的字段都算「已保存」，失焦提示一并清掉
+  const flags = { ...blurredFields.value }
+  for (const t of keys) for (const key of MANUAL_FIELDS[t]) delete flags[`${t}.${key}`]
+  blurredFields.value = flags
+}
+
+/** 放弃某一栏没提交的输入：把手填字段退回基准值 */
+function revertTab(tab: TabKey): void {
+  const before = JSON.parse(baseline.value[tab] || '{}') as Record<string, unknown>
+  const bag = manualBag(tab)
+  for (const key of MANUAL_FIELDS[tab]) bag[key] = before[key]
 }
 
 const dirtyTabs = computed<TabKey[]>(() =>
@@ -129,6 +146,27 @@ const dirtyTabs = computed<TabKey[]>(() =>
 const hasDirty = computed(() => dirtyTabs.value.length > 0)
 
 const tabDirty = (tab: TabKey): boolean => dirtyTabs.value.includes(tab)
+
+// 每个输入框自己的失焦记录：key 是 `${tab}.${field}`。
+// 提示只在「失焦过 && 值和已保存的不一致」时出现 —— 打字过程中不打扰，
+// 保存（或放弃）后自动消失，未改动的字段永远不显示
+const blurredFields = ref<Record<string, boolean>>({})
+
+/** 某个手动字段的当前值是否和已落盘的不一致 */
+function fieldDirty(tab: TabKey, key: string): boolean {
+  if (loading.value || !baseline.value[tab]) return false
+  const before = JSON.parse(baseline.value[tab]) as Record<string, unknown>
+  return JSON.stringify(manualBag(tab)[key]) !== JSON.stringify(before[key])
+}
+
+function markBlur(tab: TabKey, key: string): void {
+  blurredFields.value[`${tab}.${key}`] = true
+}
+
+/** 红框 + 下方小字提示的显示条件：这个框失焦过，且里面还有没保存的内容 */
+function fieldNeedsSave(tab: TabKey, key: string): boolean {
+  return !!blurredFields.value[`${tab}.${key}`] && fieldDirty(tab, key)
+}
 
 function dirtyCount(tab: TabKey): number {
   const bag = manualBag(tab)
@@ -249,16 +287,37 @@ async function commitTab(tab: TabKey, skipGuards = false): Promise<void> {
     const names = fixed.map((k) => FIELD_LABEL[k] ?? k).join('、')
     toast.info(`这些输入不符合格式，已按规则纠正：${names}`)
   }
-  resetBaseline()
+  // 只重置这一栏的基准，别的分栏里没提交的输入保持「未保存」状态
+  resetBaseline(tab)
 }
+
+// 切换分栏时若有没保存的输入，不再默默提交 —— 让用户自己选一次：
+// 保存并切换 / 放弃更改并切换 / 继续编辑（留在本栏）
+const confirmTabLeave = ref(false)
+let tabLeaveFrom: TabKey | null = null
+let tabLeaveNext: TabKey | null = null
 
 function switchTab(next: TabKey): void {
   if (next === activeTab.value) return
-  const from = activeTab.value
+  if (tabDirty(activeTab.value)) {
+    tabLeaveFrom = activeTab.value
+    tabLeaveNext = next
+    confirmTabLeave.value = true
+    return
+  }
   activeTab.value = next
-  // 离开一栏就等于「这一页的输入到此为止」，语义与输入框失焦一致：
-  // 顺手把没提交的输入补上，用户不必记着「我还有个没保存的」
-  void commitTab(from)
+}
+
+function tabLeaveAnswer(save: boolean): void {
+  const from = tabLeaveFrom
+  const next = tabLeaveNext
+  tabLeaveFrom = null
+  tabLeaveNext = null
+  confirmTabLeave.value = false
+  if (from && !save) revertTab(from)
+  // 保存失败也照常切换：输入还在表单里，那栏的小圆点会继续提醒
+  if (next) activeTab.value = next
+  if (from && save) void commitTab(from, true)
 }
 
 function onServerChangeOk(): void {
@@ -572,7 +631,7 @@ async function doImport(): Promise<void> {
           <h2 class="card-title">切分参数</h2>
           <div class="field-hint card-intro">
             决定「切成什么样、切哪些、切出来的放哪」。
-            <span class="hl">开关和下拉框改完立即生效</span>；输入框填好后点本页底部的保存。
+            <span class="hl">开关和下拉框改完立即生效</span>；输入框填好后点本栏底部的保存。
           </div>
           <div class="field-hint">
             切割方式固定为 <strong>ffmpeg 无损流拷贝</strong>：只换容器、不重新编码，
@@ -595,9 +654,18 @@ async function doImport(): Promise<void> {
 
           <div v-if="basis === 'size'" class="field">
             <label class="field-label">
-              <span>单段大小<span class="need-save">需保存</span></span>
+              <span>单段大小</span>
             </label>
-            <input v-model="form.split.size" class="input" placeholder="如 3.9G" />
+            <input
+              v-model="form.split.size"
+              class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('split', 'size') }"
+              placeholder="如 3.9G"
+              @blur="markBlur('split', 'size')"
+            />
+            <div v-if="fieldNeedsSave('split', 'size')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">
               身兼两职：① <strong>比它小的视频直接跳过</strong>、不切；② 切分时以它为<strong>每段的上限</strong>。
               支持 B / K / M / G，如 500M、3.9G，不区分大小写。
@@ -605,9 +673,19 @@ async function doImport(): Promise<void> {
           </div>
           <div v-else class="field">
             <label class="field-label">
-              <span>单段时长（秒）<span class="need-save">需保存</span></span>
+              <span>单段时长（秒）</span>
             </label>
-            <input v-model.number="form.split.seconds" type="number" min="1" class="input" />
+            <input
+              v-model.number="form.split.seconds"
+              type="number"
+              min="1"
+              class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('split', 'seconds') }"
+              @blur="markBlur('split', 'seconds')"
+            />
+            <div v-if="fieldNeedsSave('split', 'seconds')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">
               每段的目标秒数。切点必须落在关键帧上，所以每段实际时长会围绕这个值浮动，通常略长一点。
             </div>
@@ -656,8 +734,13 @@ async function doImport(): Promise<void> {
               v-if="form.split.outdirMode === 'custom'"
               v-model="form.split.outdir"
               class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('split', 'outdir') }"
               placeholder="自定义输出目录绝对路径"
+              @blur="markBlur('split', 'outdir')"
             />
+            <div v-if="fieldNeedsSave('split', 'outdir')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">{{ outdirHint }}</div>
           </div>
 
@@ -667,8 +750,13 @@ async function doImport(): Promise<void> {
               :model-value="form.split.markSource"
               v-model:source-dir="form.split.sourceDir"
               hide-follow
+              :dir-dirty="fieldNeedsSave('split', 'sourceDir')"
+              @dir-blur="markBlur('split', 'sourceDir')"
               @update:model-value="onMarkSourceChange"
             />
+            <div v-if="fieldNeedsSave('split', 'sourceDir')" class="dirty-hint">
+              归档目录名的改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">
               这是<strong>全局默认值</strong>，但可以被覆盖：每个监控目录能在「监控目录」页单独设一个，
               手动扫描时还能只改这一次。
@@ -737,9 +825,20 @@ async function doImport(): Promise<void> {
           </div>
           <div class="field">
             <label class="field-label">
-              <span>轮询间隔（秒）<span class="need-save">需保存</span></span>
+              <span>轮询间隔（秒）</span>
             </label>
-            <input v-model.number="form.watch.pollInterval" type="number" min="5" max="86400" class="input" />
+            <input
+              v-model.number="form.watch.pollInterval"
+              type="number"
+              min="5"
+              max="86400"
+              class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('watch', 'pollInterval') }"
+              @blur="markBlur('watch', 'pollInterval')"
+            />
+            <div v-if="fieldNeedsSave('watch', 'pollInterval')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">
               每隔这么久把「实时监听」模式的监控目录整个扫一遍。这一项<strong>始终生效</strong>，
               是 inotify 的兜底（网络共享上它就是唯一的发现手段）。
@@ -748,9 +847,20 @@ async function doImport(): Promise<void> {
           </div>
           <div class="field">
             <label class="field-label">
-              <span>文件稳定检测（秒）<span class="need-save">需保存</span></span>
+              <span>文件稳定检测（秒）</span>
             </label>
-            <input v-model.number="form.watch.settleSeconds" type="number" min="0" max="86400" class="input" />
+            <input
+              v-model.number="form.watch.settleSeconds"
+              type="number"
+              min="0"
+              max="86400"
+              class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('watch', 'settleSeconds') }"
+              @blur="markBlur('watch', 'settleSeconds')"
+            />
+            <div v-if="fieldNeedsSave('watch', 'settleSeconds')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">
               大小与修改时间连续这么多秒不变才入队，避免切到还没拷完的半成品。
               填 <span class="hl">0 = 不做检测</span>：正在写入的文件会被直接切走，不太建议。
@@ -758,9 +868,18 @@ async function doImport(): Promise<void> {
           </div>
           <div class="field">
             <label class="field-label">
-              <span>最小文件大小（忽略更小的）<span class="need-save">需保存</span></span>
+              <span>最小文件大小（忽略更小的）</span>
             </label>
-            <input v-model="form.watch.minSize" class="input" placeholder="如 0 或 100M" />
+            <input
+              v-model="form.watch.minSize"
+              class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('watch', 'minSize') }"
+              placeholder="如 0 或 100M"
+              @blur="markBlur('watch', 'minSize')"
+            />
+            <div v-if="fieldNeedsSave('watch', 'minSize')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">
               比它小的文件不切。<strong>填 0 = 不限制</strong>。支持 B / K / M / G，如 100M。
             </div>
@@ -804,8 +923,22 @@ async function doImport(): Promise<void> {
           <div class="field">
             <label class="field-label">监听地址</label>
             <!-- 锁定态直接显示环境变量里的真实取值：设置里那份可能是历史值，跟实际对不上 -->
-            <input v-if="hostLocked" class="input input--locked" :value="env?.hostEnv ?? ''" disabled />
-            <input v-else v-model="form.server.host" class="input" />
+            <input
+              v-if="hostLocked"
+              class="input input--locked"
+              :value="env?.hostEnv ?? ''"
+              disabled
+            />
+            <input
+              v-else
+              v-model="form.server.host"
+              class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('server', 'host') }"
+              @blur="markBlur('server', 'host')"
+            />
+            <div v-if="fieldNeedsSave('server', 'host')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div v-if="hostLocked" class="field-hint field-hint--warn">
               实际生效值来自部署给的 <span class="mono">VS_HOST</span>，<strong>在这里改了不会生效</strong>。
               要改得动 Docker 的 environment 后重建容器。
@@ -829,7 +962,12 @@ async function doImport(): Promise<void> {
               min="1"
               max="65535"
               class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('server', 'port') }"
+              @blur="markBlur('server', 'port')"
             />
+            <div v-if="fieldNeedsSave('server', 'port')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div v-if="portLocked" class="field-hint field-hint--warn">
               实际生效值来自部署给的 <span class="mono">VS_PORT</span>，<strong>在这里改了不会生效</strong>。
               想换访问端口就改 Docker 端口映射的<strong>宿主端口</strong>那一侧（如
@@ -842,9 +980,20 @@ async function doImport(): Promise<void> {
           </div>
           <div class="field">
             <label class="field-label">
-              <span>任务日志保留行数<span class="need-save">需保存</span></span>
+              <span>任务日志保留行数</span>
             </label>
-            <input v-model.number="form.server.jobLogLines" type="number" min="100" max="100000" class="input" />
+            <input
+              v-model.number="form.server.jobLogLines"
+              type="number"
+              min="100"
+              max="100000"
+              class="input"
+              :class="{ 'input--dirty': fieldNeedsSave('server', 'jobLogLines') }"
+              @blur="markBlur('server', 'jobLogLines')"
+            />
+            <div v-if="fieldNeedsSave('server', 'jobLogLines')" class="dirty-hint">
+              这项改动还没保存，点本栏底部「保存设置」后生效
+            </div>
             <div class="field-hint">
               每个任务的日志最多留这么多行，超出丢掉最早的。范围 100 ~ 100000。
             </div>
@@ -982,6 +1131,16 @@ async function doImport(): Promise<void> {
       </template>
     </Modal>
 
+    <!-- 切换分栏时还有没提交的输入：交给用户选，不再默默提交 -->
+    <Modal v-model="confirmTabLeave" title="这一栏还有输入没保存">
+      <p><strong>{{ tabLeaveFrom ? TAB_LABEL[tabLeaveFrom] : '' }}</strong>里有还没提交的输入框内容。</p>
+      <p>保存并切换就现在落盘；放弃更改会把这些输入退回上一次保存的值。</p>
+      <template #footer>
+        <button class="btn" @click="tabLeaveAnswer(false)">放弃更改并切换</button>
+        <button class="btn btn--primary" @click="tabLeaveAnswer(true)">保存并切换</button>
+      </template>
+    </Modal>
+
     <!-- 离开页面时还有没提交的输入。这里不直接自动提交：改监听参数那类确认门
          需要人回答，页面走了就来不及问 -->
     <Modal v-model="confirmLeave" title="还有输入没保存">
@@ -1108,16 +1267,13 @@ async function doImport(): Promise<void> {
   color: var(--color-warning);
 }
 
-/* 标出哪些字段是「输完还得点保存」的。没有这个标记，用户会以为
-   输入框跟开关一样改完就生效，然后奇怪为什么设置没变 */
-.need-save {
-  margin-left: var(--space-2);
-  padding: 1px var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--color-muted-soft);
-  color: var(--color-text-faint);
+/* 失焦后仍有未保存内容的输入框：红框提醒（保存在 global.css，MarkSourcePicker
+   里的归档目录输入框也要用到这个类）。
+   框下面的小字提示用 .dirty-hint，只在字段真正「脏」的时候才渲染 */
+.dirty-hint {
+  margin-top: 2px;
   font-size: var(--font-size-xs);
-  font-weight: 400;
+  color: var(--color-danger);
 }
 
 /* ---------- 备份恢复 ---------- */

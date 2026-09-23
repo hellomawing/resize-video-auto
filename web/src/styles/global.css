@@ -191,6 +191,13 @@ h4 {
   background: var(--color-surface-2);
   color: var(--color-text-faint);
 }
+/* 失焦后仍有未保存内容的输入框（设置页等）：红框盖过 focus 蓝框。
+   放在全局是因为 MarkSourcePicker 内部的归档目录输入框也用这个类 */
+.input--dirty,
+.input--dirty:focus {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 3px var(--color-danger-soft);
+}
 .field {
   display: flex;
   flex-direction: column;

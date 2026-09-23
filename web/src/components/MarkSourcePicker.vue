@@ -29,6 +29,11 @@ withDefaults(
     disabled?: boolean
     /** 表格行内用的紧凑尺寸 */
     compact?: boolean
+    /**
+     * 归档目录输入框是否处于「失焦后仍未保存」状态（设置页用它标红提醒）。
+     * 监控目录等其它入口不传就是普通外观。
+     */
+    dirDirty?: boolean
   }>(),
   {
     sourceDir: '',
@@ -37,12 +42,14 @@ withDefaults(
     hideFollow: false,
     disabled: false,
     compact: false,
+    dirDirty: false,
   },
 )
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: MarkValue): void
   (e: 'update:sourceDir', value: string): void
+  (e: 'dirBlur'): void
 }>()
 
 function onMark(event: Event): void {
@@ -74,12 +81,13 @@ function onDir(event: Event): void {
       <input
         v-if="modelValue === 'move'"
         class="input"
-        :class="{ 'input--sm': compact }"
+        :class="{ 'input--sm': compact, 'input--dirty': dirDirty }"
         :value="sourceDir"
         :disabled="disabled"
         :placeholder="DEFAULT_SOURCE_DIR"
         title="归档子文件夹名，不存在会自动创建"
         @change="onDir"
+        @blur="emit('dirBlur')"
       />
     </div>
 

@@ -18,11 +18,8 @@ const links = [
 <template>
   <aside class="nav">
     <div class="nav-brand">
-      <div class="nav-logo">VS</div>
-      <div class="nav-brand-text">
-        <div class="nav-brand-title">视频无损分割</div>
-        <div class="nav-brand-sub">NAS 控制台</div>
-      </div>
+      <img class="nav-logo" src="/favicon.svg" alt="视频无损分割" />
+      <div class="nav-brand-title">视频无损分割</div>
     </div>
 
     <nav class="nav-links">
@@ -65,24 +62,17 @@ const links = [
   gap: var(--space-3);
   padding: 0 var(--space-4) var(--space-4);
 }
+/* 品牌图标与站点 favicon 是同一张图：改 logo 只动 web/public/favicon.svg 一处 */
 .nav-logo {
   width: 38px;
   height: 38px;
   border-radius: var(--radius);
-  background: var(--color-primary);
-  color: #fff;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
+  flex-shrink: 0;
 }
 .nav-brand-title {
   font-weight: 600;
   font-size: var(--font-size);
-}
-.nav-brand-sub {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-faint);
 }
 .nav-links {
   display: flex;
