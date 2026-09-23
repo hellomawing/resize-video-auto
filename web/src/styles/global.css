@@ -237,6 +237,57 @@ h4 {
   font-family: var(--font-mono);
 }
 
+/* ---------- 表单页：内容列限宽 + 两栏字段 ---------- */
+/* 「一行太长读着累」的根源是行宽（measure），不是屏幕有多宽。所以表单页做两件事：
+   ① 整列内容限宽；② 把标签挪到左侧，让控件与说明文字只占右列（约 596px ≈ 50 个汉字），
+   顺带把纵向长度也压下来。只给「设置 / 新增编辑」这类表单页加 .page--form ——
+   列表页的表格恰好相反，越宽越好读，别一起限。 */
+.page--form {
+  max-width: 840px;
+  --field-label-w: 180px;
+  /* 首行控件的常见高度：input / select / .tags 都是 36px。
+     标签照它垫高再内部居中，中线才跟控件对齐。 */
+  --field-lead-h: 36px;
+}
+/* 整段说明文字（卡片开头，以及不属于任何字段的 hint，如「配置备份与恢复」那块）
+   单独收一次行宽，不跟着卡片一路铺到右边缘 */
+.page--form .card-intro,
+.page--form .field-hint {
+  max-width: 700px;
+}
+.page--form .field {
+  display: grid;
+  grid-template-columns: var(--field-label-w) minmax(0, 1fr);
+  column-gap: var(--space-4);
+  row-gap: var(--space-2);
+  align-items: center;
+}
+/* 第一个孩子是标签，固定占左列；其余（控件 + 若干条 hint）依次堆在右列。
+   只指定列、行交给自动排列，就不必给每个控件加类。 */
+.page--form .field > :first-child {
+  grid-column: 1;
+  /* 贴着本行上沿，但在 --field-lead-h 高度内垂直居中：控件普遍 36px，
+     少数整块更高（如目录选择器的三步走），标签才不会飘到半空 */
+  align-self: start;
+  display: flex;
+  align-items: center;
+  min-height: var(--field-lead-h);
+}
+.page--form .field > :not(:first-child) {
+  grid-column: 2;
+}
+/* 窄到放不下两栏时退回竖排：右列只剩两三百像素，还不如堆着 */
+@media (max-width: 820px) {
+  .page--form .field {
+    grid-template-columns: minmax(0, 1fr);
+    column-gap: 0;
+  }
+  .page--form .field > :first-child,
+  .page--form .field > :not(:first-child) {
+    grid-column: 1;
+  }
+}
+
 /* ---------- 表格 ---------- */
 .data-table {
   width: 100%;

@@ -177,7 +177,8 @@ async function save(): Promise<void> {
 </script>
 
 <template>
-  <div class="page">
+  <!-- page--form：与「设置」页同一套表单栅格（限宽 + 标签在左），两页观感统一 -->
+  <div class="page page--form">
     <div class="page-header">
       <div>
         <h1 class="page-title">{{ isEdit ? '编辑监控目录' : '新增监控目录' }}</h1>

@@ -252,7 +252,8 @@ async function doImport(): Promise<void> {
 </script>
 
 <template>
-  <div class="page">
+  <!-- page--form：内容列限宽 + 标签移到左侧两栏，说明文字不再铺满整个屏幕宽 -->
+  <div class="page page--form">
     <div class="page-header">
       <div>
         <h1 class="page-title">设置</h1>
