@@ -143,7 +143,7 @@ const PLACEHOLDER: Record<FilterMode, string> = {
     <!-- ② 名字规则 -->
     <div class="rules-block">
       <div class="rules-title">文件名与文件夹名</div>
-      <div class="rules-row">
+      <div class="rules-row rules-row--field">
         <span class="rules-tag rules-tag--in">仅限</span>
         <div class="rules-list">
           <div v-for="(r, i) in filters.nameInclude" :key="'i' + i" class="rule-group">
@@ -163,11 +163,13 @@ const PLACEHOLDER: Record<FilterMode, string> = {
             </div>
             <div v-if="regexError(r)" class="rule-bad">{{ regexError(r) }}</div>
           </div>
-          <button class="btn btn--sm" type="button" @click="addRule('nameInclude')">+ 添加规则</button>
+          <div class="rules-add">
+            <button class="btn btn--sm" type="button" @click="addRule('nameInclude')">+ 添加规则</button>
+          </div>
         </div>
       </div>
 
-      <div class="rules-row">
+      <div class="rules-row rules-row--field">
         <span class="rules-tag rules-tag--out">排除</span>
         <div class="rules-list">
           <div v-for="(r, i) in filters.nameExclude" :key="'o' + i" class="rule-group">
@@ -187,7 +189,9 @@ const PLACEHOLDER: Record<FilterMode, string> = {
             </div>
             <div v-if="regexError(r)" class="rule-bad">{{ regexError(r) }}</div>
           </div>
-          <button class="btn btn--sm" type="button" @click="addRule('nameExclude')">+ 添加规则</button>
+          <div class="rules-add">
+            <button class="btn btn--sm" type="button" @click="addRule('nameExclude')">+ 添加规则</button>
+          </div>
         </div>
       </div>
 
@@ -225,12 +229,22 @@ const PLACEHOLDER: Record<FilterMode, string> = {
   align-items: flex-start;
   gap: var(--space-3);
   min-width: 0;
+  /* 行首「仅限 / 排除」标签的高度基准 = **本行第一个控件的真实高度**。
+     两边并不一样（文件类型是 chip 22px，名字规则是输入控件 36px），
+     所以不能拿一个固定值去凑 —— 那样必然有一处对不齐。 */
+  --lead-h: 22px;
+}
+/* 名字规则行的首行是 select / input（36px），标签跟着它走 */
+.rules-row--field {
+  --lead-h: 36px;
 }
 .rules-tag {
   flex-shrink: 0;
-  /* 与 chip 首行文字基线对齐 */
-  margin-top: 5px;
-  padding: 1px var(--space-2);
+  /* 高度与首行控件一致 + 内部垂直居中，天然比 margin-top 硬凑更稳 */
+  display: inline-flex;
+  align-items: center;
+  height: var(--lead-h);
+  padding: 0 var(--space-2);
   border-radius: var(--radius-sm);
   font-size: var(--font-size-xs);
   white-space: nowrap;
@@ -294,6 +308,13 @@ const PLACEHOLDER: Record<FilterMode, string> = {
   flex-direction: column;
   gap: var(--space-2);
   align-items: flex-start;
+}
+.rules-add {
+  /* 一条规则都没有时，本行唯一的控件是「+ 添加规则」按钮（28px）。
+     垫成与规则行等高的槽，行首标签才不会比它高出一截。 */
+  height: var(--lead-h);
+  display: flex;
+  align-items: center;
 }
 .rule-group {
   width: 100%;
