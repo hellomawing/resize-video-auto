@@ -64,6 +64,13 @@ _PSEUDO_FSTYPES = {
 # 容器自身的挂载点，绝不能当数据根暴露出去（/data 是整个程序状态所在）
 _MOUNT_NEVER_ROOTS = ("/", "/data")
 
+# Docker 存储驱动的容器私有镜像层。当 docker 数据根落在某个被 bind 挂进容器的
+# 卷里（如本机 Docker Root Dir=/vol1/docker，而 /vol1 整体被挂进来）时，mountinfo
+# 会出现 /vol1/docker/overlay2/<id>/merged/<...> 这类条目——它们是把容器**自身的
+# 根文件系统/数据目录**镜像出来的，绝不是用户数据，绝不能当可选存储位置下发。
+# Docker 的 overlay2 数据目录恒叫 overlay2，/overlay2/ 出现在路径里基本就能判定。
+_MOUNT_CONTAINER_STORAGE = "/overlay2/"
+
 
 def _unescape_mountpoint(text: str) -> str:
     # mountinfo 里空格等特殊字符按八进制转义（\040 等）
@@ -89,6 +96,9 @@ def _parse_mountinfo(text: str) -> list:
         mountpoint = _unescape_mountpoint(fields[4])
         fstype = fields[sep + 1]
         if fstype in _PSEUDO_FSTYPES or mountpoint in _MOUNT_NEVER_ROOTS:
+            continue
+        # Docker overlay2 容器私有镜像层（见上面的常量注释），不是用户数据挂载
+        if _MOUNT_CONTAINER_STORAGE in mountpoint:
             continue
         roots.append(mountpoint)
     return roots
