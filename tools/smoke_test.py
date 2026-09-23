@@ -143,6 +143,10 @@ def main() -> int:
     env["VS_PORT"] = str(PORT)
     env["VS_LOG_LEVEL"] = "warning"
     env["PYTHONIOENCODING"] = "utf-8"
+    # 可访问范围只由容器挂载决定（白名单设置已删除）。这里不是容器、没有 /proc，
+    # 用同一个出口的环境变量代替「只挂了 inbox 一个目录」——
+    # 下面「范围外的路径被拒绝」正是靠它成立。
+    env["VS_EXTRA_ROOTS"] = str(INBOX)
 
     server = subprocess.Popen(
         [sys.executable, "-m", "app.main"],
@@ -179,7 +183,6 @@ def main() -> int:
         settings["watch"]["settleSeconds"] = 0     # 测试里不等稳定检测
         settings["watch"]["minSize"] = "0"
         settings["watch"]["realtime"] = True
-        settings["watch"]["allowedRoots"] = [str(INBOX)]
 
         status, saved = req("PUT", "/api/settings", settings)
         check("PUT /api/settings 返回 200", status == 200)
@@ -199,7 +202,7 @@ def main() -> int:
               "videoCount=%s" % (browse or {}).get("videoCount"))
 
         status, denied = req("GET", "/api/browse?path=%s" % str(PROJECT_DIR))
-        check("白名单外的路径被拒绝", status == 403, "HTTP %s" % status)
+        check("未挂载的路径被拒绝", status == 403, "HTTP %s" % status)
 
         # ---------------------------------------------------------- 监控目录
         print("\n[4] 监控目录")
@@ -215,7 +218,7 @@ def main() -> int:
         check("GET /api/watchpoints 返回 1 条", status == 200 and len(items) == 1)
 
         status, outside = req("POST", "/api/watchpoints", {"path": str(PROJECT_DIR)})
-        check("添加白名单外目录被拒绝", status == 403, "HTTP %s" % status)
+        check("添加未挂载目录被拒绝", status == 403, "HTTP %s" % status)
 
         # ---------------------------------------------------------- 扫描入队
         print("\n[5] 扫描与入队")

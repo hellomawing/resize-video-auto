@@ -62,9 +62,8 @@ export interface EnvInfo {
 export interface BrowseResult {
   path: string
   parent: string | null
-  // 只含实际存在的根目录；配置里不存在的挪到 missingRoots
+  // 可访问的根目录 = 容器里实际挂载进来的数据目录（没有白名单这个概念）
   roots: string[]
-  missingRoots: string[]
   dirs: BrowseEntry[]
   shortcuts: DirShortcut[]
   // 根目录不可枚举（fnOS 的 /vol1）时自动探测到的可直接进入的层，如 /vol1/1000
@@ -116,7 +115,6 @@ export interface WatchSettings {
   settleSeconds: number
   minSize: string
   ignoreSuffixes: string[]
-  allowedRoots: string[]
 }
 
 export interface ServerSettings {

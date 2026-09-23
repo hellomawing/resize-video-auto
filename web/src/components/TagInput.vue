@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
-// 标签输入：回车添加、点 × 删除。用于 allowedRoots / ext / ignoreSuffixes 等列表字段。
+// 标签输入：回车添加、点 × 删除。用于 ext / ignoreSuffixes 等列表字段。
 const props = withDefaults(
   defineProps<{
     modelValue: string[]

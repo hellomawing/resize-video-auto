@@ -4,7 +4,7 @@ import Modal from './Modal.vue'
 import { browse } from '../api/system'
 import type { BrowseResult, DirShortcut } from '../api/types'
 
-// 目录选择器（弹窗）：基于 /api/browse 逐级浏览，可切换白名单根目录。
+// 目录选择器（弹窗）：基于 /api/browse 逐级浏览。根目录 = 容器里挂载进来的数据目录。
 // modelValue 为已选路径；open 控制弹窗显隐。父组件用 v-model 绑定路径、v-model:open 控制开关。
 //
 // 供「监控目录」页新增/编辑目录时使用（撤销页直接用监控目录下拉框，不走这里）。
@@ -29,7 +29,6 @@ const emit = defineEmits<{
 
 const current = ref('')
 const roots = ref<string[]>([])
-const missingRoots = ref<string[]>([])
 const dirs = ref<BrowseResult['dirs']>([])
 const shortcuts = ref<DirShortcut[]>([])
 const suggestedRoots = ref<string[]>([])
@@ -49,7 +48,6 @@ async function load(path: string): Promise<void> {
   try {
     const res = await browse(path || undefined)
     roots.value = res.roots
-    missingRoots.value = res.missingRoots || []
     dirs.value = res.dirs
     shortcuts.value = res.shortcuts || []
     suggestedRoots.value = res.suggestedRoots || []
@@ -102,11 +100,6 @@ function cancel(): void {
       </div>
 
       <div v-if="error" class="picker-error">{{ error }}</div>
-
-      <div v-if="missingRoots.length" class="picker-hint">
-        配置的可访问根目录里有 {{ missingRoots.length }} 个不存在：{{ missingRoots.join('、') }}
-        —— 容器里可能没把它们挂载进来，所以没放进上面的下拉框。
-      </div>
 
       <div v-if="suggestedRoots.length" class="picker-sect">
         <div class="picker-sect-title">可直接进入的目录（点一下直达）</div>
@@ -178,12 +171,6 @@ function cancel(): void {
 }
 .picker-bar .select {
   flex: 1;
-}
-.picker-hint {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-soft);
-  line-height: 1.7;
-  margin-bottom: var(--space-3);
 }
 .picker-error {
   background: var(--color-danger-soft);

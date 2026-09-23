@@ -39,13 +39,16 @@ db.init_db()
 MEDIA = TMP / "media"
 INBOX = MEDIA / "inbox"
 NEWDIR = MEDIA / "newdir"
-OUTSIDE = TMP / "outside"          # 白名单之外
+OUTSIDE = TMP / "outside"          # 没挂载进来的目录
 for d in (INBOX, NEWDIR, OUTSIDE):
     d.mkdir(parents=True)
 
+# 可访问范围只由容器挂载决定（没有白名单设置了）。本机没有 /proc，
+# 用环境变量代替「挂载了哪些目录」——第 4 节再把 OUTSIDE 摘掉，模拟换台机器挂载不同。
+os.environ["VS_EXTRA_ROOTS"] = os.pathsep.join([str(MEDIA), str(OUTSIDE)])
+
 # save_settings 是「基于默认值的整体替换」而不是补丁 —— 漏写的键会被打回默认值
-config.save_settings({"watch": {"allowedRoots": [str(MEDIA)]},
-                      "split": {"outdir": ""}})
+config.save_settings({"split": {"outdir": ""}})
 
 from fastapi.testclient import TestClient                     # noqa: E402
 from app.main import app                                      # noqa: E402
@@ -120,7 +123,9 @@ r3 = client.post("/api/settings/import", json=b3).json()
 check("换 id 仍算同一条", r3["watchpointsUpdated"], 1)
 check("总数没变", len(client.get("/api/watchpoints").json()), 2)
 
-print("== 4. 白名单外的路径跳过，不拖垮整份导入 ==")
+print("== 4. 没挂载的路径跳过，不拖垮整份导入 ==")
+# 模拟「换台机器后这个目录没挂进来」：把它从可访问范围里摘掉
+os.environ["VS_EXTRA_ROOTS"] = str(MEDIA)
 b4 = {"version": 1, "settings": {},
       "watchpoints": [{"path": str(OUTSIDE), "scanMode": "manual"}],
       "archiveDirs": []}

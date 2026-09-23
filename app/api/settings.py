@@ -31,9 +31,8 @@ def read_settings() -> Settings:
 def write_settings(payload: Settings) -> Settings:
     """
     保存设置后要立刻让改动生效：
-      * 监控服务重新装配（允许根目录、实时监听开关可能变了）
+      * 监控服务重新装配（实时监听开关、稳定检测参数可能变了）
       * 监控目录的扫描计划重排（时区可能变了，cron 的触发时刻跟着变）
-    目录白名单改了之后，正在监听的目录如果不再合法，也应该被摘掉。
     """
     saved = config.save_settings(payload.model_dump(by_alias=True))
     monitor_service.reload()
@@ -73,8 +72,8 @@ def import_config(payload: ConfigBundle) -> ImportResult:
       * 归档目录记录 —— **只增不减**，和运行时记名的语义保持一致。
         少记一个名字就可能把归档里的原片重新切一遍，所以宁可多记。
 
-    路径不在白名单里的监控目录会被跳过并计数，不会让整份导入失败 ——
-    换机器后根目录不同是很常见的，为一条路径否定整份备份没有道理。
+    路径不在容器已挂载目录内的监控目录会被跳过并计数，不会让整份导入失败 ——
+    换机器后挂载不同是很常见的，为一条路径否定整份备份没有道理。
     """
     data = payload.model_dump(by_alias=True)
 
@@ -143,7 +142,7 @@ def import_config(payload: ConfigBundle) -> ImportResult:
         parts.append("设置已替换")
     parts.append("监控目录新增 %d、更新 %d" % (added, updated))
     if skipped:
-        parts.append("跳过 %d（路径不在白名单内）" % skipped)
+        parts.append("跳过 %d（路径不在容器已挂载的目录内）" % skipped)
     parts.append("归档记录新增 %d" % dirs_added)
     return ImportResult(settings_applied=applied, watchpoints_added=added,
                         watchpoints_updated=updated, watchpoints_skipped=skipped,

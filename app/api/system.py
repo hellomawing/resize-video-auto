@@ -97,7 +97,7 @@ def _parse_mountinfo(text: str) -> list:
 def _detect_mounted_roots() -> list:
     """读取本进程的 mountinfo，返回实际存在的数据目录挂载点。
 
-    非 Linux（本机开发）没有 /proc，返回空表 —— 退回纯设置白名单。
+    非 Linux（本机开发）没有 /proc，返回空表 —— 此时靠 VS_EXTRA_ROOTS 兜底。
     """
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as fh:
@@ -112,22 +112,32 @@ def _detect_mounted_roots() -> list:
     return found
 
 
-def _allowed_roots() -> list:
-    settings = config.load_settings()
-    roots = []
-    for raw in settings["watch"].get("allowedRoots") or []:
-        try:
-            roots.append(Path(raw).resolve())
-        except Exception:
-            continue
-    # 容器里显式挂载的目录自动并入白名单：用户既然已经在 Docker 里挂了
-    # 这个路径，意图足够明确，不该再要求到设置里手抄一遍（真机 /test-dir 案例）。
-    known = {str(r) for r in roots}
-    for mp in _detect_mounted_roots():
-        p = Path(mp)
-        if str(p) not in known:
-            known.add(str(p))
-            roots.append(p)
+def _extra_roots_from_env() -> list:
+    """开发/测试兜底：非容器环境（没有 /proc）可以用环境变量补几个根目录。
+
+    只认环境变量，界面与文档主流程都不出现它 —— 正常部署时范围由挂载决定。
+    """
+    raw = (os.environ.get("VS_EXTRA_ROOTS") or "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in raw.split(os.pathsep) if p.strip()]
+    # 与挂载探测保持一致：根目录恒为**实际存在**的目录（写错的不进下拉框）
+    return [Path(p) for p in parts if os.path.isdir(p)]
+
+
+def _accessible_roots() -> list:
+    """网页上可浏览、可添加的范围 —— **只由容器挂载决定**。
+
+    没有「白名单」这个概念了：你在 Docker 里挂进来的数据目录就是范围。
+    挂载探测已排除根 overlay、/data 卷与系统伪文件系统（见 _parse_mountinfo），
+    所以程序自己的数据库和代码目录不会出现在网页上。
+    """
+    roots, known = [], set()
+    for path in _detect_mounted_roots() + [str(p) for p in _extra_roots_from_env()]:
+        key = str(path)
+        if key not in known:
+            known.add(key)
+            roots.append(Path(path))
     return roots
 
 
@@ -174,7 +184,7 @@ def _scandir_error(target: Path) -> list:
 
 
 def _within(path: Path, roots) -> bool:
-    """路径是否落在某个白名单根目录之内（含根本身）。"""
+    """路径是否落在某个可访问根目录之内（含根本身）。"""
     for root in roots:
         try:
             path.relative_to(root)
@@ -186,13 +196,16 @@ def _within(path: Path, roots) -> bool:
 
 def ensure_allowed(path: Path, roots=None) -> Path:
     """
-    确认路径落在白名单根目录内。这是网页上所有「用户给路径」的入口
-    都必须过的一道闸——否则容器把 NAS 整盘挂进来了，等于把整个文件系统
-    暴露成一个可读接口。
+    确认路径落在容器**已挂载**的目录内。这是网页上所有「用户给路径」的入口
+    都必须过的一道闸——容器看不见的路径本来也用不了，这道闸只是把
+    「路径拼错了 / 忘了挂载」变成一句明确的提示，而不是一个诡异的报错。
     """
-    roots = roots if roots is not None else _allowed_roots()
+    roots = roots if roots is not None else _accessible_roots()
     if not roots:
-        raise HTTPException(status_code=400, detail="尚未配置可访问根目录，请先在设置里填写")
+        raise HTTPException(
+            status_code=400,
+            detail="没有检测到任何已挂载的目录。请把要处理的目录挂进容器"
+                   "（docker-compose 里的 volumes），再重新打开这个页面。")
     try:
         resolved = path.resolve()
     except OSError as exc:
@@ -201,7 +214,8 @@ def ensure_allowed(path: Path, roots=None) -> Path:
         return resolved
     raise HTTPException(
         status_code=403,
-        detail="路径 %s 不在可访问范围内。允许的根目录：%s"
+        detail="路径 %s 不在容器已挂载的目录内（已挂载：%s）。"
+               "要把这个目录纳入可访问范围，请在 docker-compose 的 volumes 里挂载它。"
                % (resolved, "、".join(str(r) for r in roots)))
 
 
@@ -213,7 +227,7 @@ def _collect_shortcuts(settings, roots) -> list:
       2. 最近任务出现过的目录 —— 手动扫过、切过的地方
       3. 系统设置里的输出目录 —— 哪怕只用过一次也得看得见
 
-    白名单之外的目录不给入口：点了也是 403，摆出来只会让人白跑一趟。
+    可访问范围之外的目录不给入口：点了也是 403，摆出来只会让人白跑一趟。
     """
     items, seen = [], set()
 
@@ -247,35 +261,28 @@ def _collect_shortcuts(settings, roots) -> list:
 
 
 @router.get("/browse", response_model=BrowseOut)
-def browse(path: str = Query(default=None, description="要浏览的目录，省略则返回各根目录")):
-    roots = _allowed_roots()
+def browse(path: str = Query(default=None, description="要浏览的目录，省略则返回已挂载的根目录")):
+    roots = _accessible_roots()
     settings = config.load_settings()
     shortcuts = _collect_shortcuts(settings, roots)
 
-    # 存在的根才放进 roots（下拉里可选），不存在的单独报出来。
-    # 系统默认白名单是 /vol1~4，但真机上往往只有 /vol1 —— 把 /vol2~4
-    # 摆在选择器里，用户点一下只会得到一句「目录不存在」。
-    live_roots, missing_roots = [], []
-    for r in roots:
-        (live_roots if r.is_dir() else missing_roots).append(str(r))
-    root_texts = live_roots or [str(r) for r in roots]
+    # 根目录来自挂载探测，本身都是存在的目录，直接把路径文本下发
+    root_texts = [str(r) for r in roots]
 
     if not path:
-        dirs, error = [], None
-        dirs = [DirItem(name=Path(r).name or r, path=r) for r in live_roots]
+        dirs = [DirItem(name=Path(r).name or r, path=r) for r in root_texts]
+        error = None
         if not dirs:
-            error = ("配置的可访问根目录都不存在：%s。"
-                     "容器里请确认这些路径已经挂载进来"
-                     % "、".join(str(r) for r in roots))
+            error = ("没有检测到任何已挂载的目录。请在 docker-compose 的 volumes 里"
+                     "把要处理的目录挂进容器，然后重新打开这个页面。")
         # 打开选择器的第一眼就探一遍：某个根不可枚举（fnOS 的 /vol1）时，
         # 直接把能进的层摆出来，省得用户点了根、看完一大段报错才知道有出路
         suggestions = []
-        for r in live_roots:
+        for r in root_texts:
             for hit in _scandir_error(Path(r)):
                 if hit not in suggestions:
                     suggestions.append(hit)
-        return BrowseOut(path="", parent=None, roots=root_texts,
-                         missing_roots=missing_roots, dirs=dirs,
+        return BrowseOut(path="", parent=None, roots=root_texts, dirs=dirs,
                          shortcuts=shortcuts, suggested_roots=suggestions,
                          video_count=0, error=error)
 
@@ -283,8 +290,8 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
 
     if not target.is_dir():
         return BrowseOut(path=str(target), parent=str(target.parent),
-                         roots=root_texts, missing_roots=missing_roots,
-                         dirs=[], shortcuts=shortcuts, video_count=0,
+                         roots=root_texts, dirs=[], shortcuts=shortcuts,
+                         video_count=0,
                          error="目录不存在，或者容器没有权限访问它"
                                "（确认路径拼写、以及它是否已挂载进容器）")
 
@@ -310,11 +317,9 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
         suggestions = _probe_enumerable_children(target)
         error = ("没有权限列出该目录的子目录 —— fnOS 这类系统把存储池根目录"
                  "（/vol1）故意设成不可枚举，这不代表下面的目录不可用。"
-                 + ("下面已列出探测到的「可直接进入」目录，点一下即可继续；"
+                 + ("下面已列出探测到的「可直接进入」目录，点一下即可继续。"
                     if suggestions else
-                    "请用上方的「常用目录」直达已知目录，或")
-                 + "到「设置 → 可访问根目录白名单」把根改到可枚举的层"
-                   "（如 /vol1/1000）。")
+                    "请用上方的「常用目录」直达已知目录，或改挂它下面的某个子目录。"))
     except OSError as exc:
         error = "读取目录失败：%s" % exc
 
@@ -322,8 +327,7 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
     dirs.sort(key=lambda d: (d.name.startswith("@"), d.name.lower()))
     parent = str(target.parent) if target.parent != target else None
     return BrowseOut(path=str(target), parent=parent, roots=root_texts,
-                     missing_roots=missing_roots, dirs=dirs,
-                     shortcuts=shortcuts, suggested_roots=suggestions,
+                     dirs=dirs, shortcuts=shortcuts, suggested_roots=suggestions,
                      video_count=videos, error=error)
 
 
@@ -339,9 +343,9 @@ def env_info() -> dict:
         "dataDirWritable": os.access(config.DATA_DIR, os.W_OK),
         "ffmpeg": engine.find_bin("ffmpeg"),
         "ffprobe": engine.find_bin("ffprobe"),
-        "allowedRoots": [
+        "accessibleRoots": [
             {"path": str(r), "exists": r.is_dir(), "writable": os.access(r, os.W_OK)}
-            for r in _allowed_roots()
+            for r in _accessible_roots()
         ],
         "uid": os.getuid() if hasattr(os, "getuid") else None,
         "gid": os.getgid() if hasattr(os, "getgid") else None,

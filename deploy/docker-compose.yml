@@ -33,9 +33,10 @@ services:
       #   docker run --rm -v video-splitter-data:/data -v "$PWD":/backup \
       #     alpine tar czf /backup/vs-data.tgz -C /data .
       - vsdata:/data
-      # 监控目录：容器内路径与宿主机保持一致，这样默认白名单 /vol1…/vol4 直接可用
+      # 要处理的视频：挂进来的目录就是网页上能浏览、能添加监控的范围
+      # （没有额外的白名单要配），容器内路径与宿主机保持一致最省心
       - /vol1:/vol1
-      # 有多个存储空间就继续加，并在网页「设置 → 可访问根目录」里补上
+      # 有多个存储空间就继续加，挂上即可，网页上立刻能选到
       # - /vol2:/vol2
       # - /vol3:/vol3
     logging:

@@ -106,16 +106,8 @@ if [ -n "$VOL_CHECK" ] && [ -d "$VOL_CHECK" ]; then
     fi
 fi
 
-# ---------------------------------------------------------------- 预置白名单
-# 只在配置文件还不存在时写，避免覆盖用户后来改过的设置。
-SETTINGS_FILE="${DATA_DIR}/settings.json"
-if [ ! -f "$SETTINGS_FILE" ]; then
-    ROOTS=$(grep -oE '^      - (/[^:]+):' "$TMP_VOL" | sed 's/^      - //; s/:$//' \
-            | awk '!seen[$0]++')
-    if [ -n "$ROOTS" ]; then
-        JSON_ROOTS=$(printf '%s\n' "$ROOTS" | awk 'BEGIN{ORS=""} {if (NR>1) printf ", "; printf "\"%s\"", $0}')
-        printf '{\n  "watch": {\n    "allowedRoots": [%s]\n  }\n}\n' "$JSON_ROOTS" > "$SETTINGS_FILE"
-    fi
-fi
+# 说明：以前这里会按挂载列表预置一份 settings.json 的「可访问根目录白名单」。
+# 那个概念已删除 —— 网页上能浏览/添加的范围现在**只由容器挂载决定**，
+# 所以安装时不需要再写任何设置。
 
 exit 0

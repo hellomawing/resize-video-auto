@@ -53,7 +53,6 @@ const emptyForm = (): FormState => ({
 
 const list = ref<WatchPoint[]>([])
 const loading = ref(true)
-const allowedRoots = ref<string[]>([])
 /**
  * 系统设置里的默认原片处理方式。
  * 表格行和新增/编辑弹窗里的「跟随系统设置」都要当场说明它会落到哪一种，
@@ -92,7 +91,6 @@ async function load(): Promise<void> {
   try {
     const [wps, settings] = await Promise.all([listWatchpoints(), getSettings()])
     list.value = wps
-    allowedRoots.value = settings.watch.allowedRoots
     systemMark.value = settings.split.markSource
     systemSourceDir.value = settings.split.sourceDir
   } catch (e) {
@@ -124,7 +122,7 @@ function openEdit(wp: WatchPoint): void {
 }
 
 async function save(): Promise<void> {
-  // 新增必须选择白名单内的路径
+  // 新增必须先选目录（弹窗里没有可直接输入的路径）
   if (!editingId.value && !form.value.path) {
     toast.error('请先选择监控目录')
     return
@@ -320,9 +318,7 @@ const columns = [
         <h1 class="page-title">监控目录</h1>
         <div class="page-subtitle">
           选择每个目录的扫描方式，自动切分新落盘的大视频
-          <template v-if="allowedRoots.length">
-            · 允许根目录见「设置」，容器内挂载的目录自动可选
-          </template>
+          · 可浏览范围为容器已挂载的目录
         </div>
       </div>
       <!-- 撤销分割是这一页的子页面（/watch/undo），入口只放在这里 -->
@@ -407,11 +403,23 @@ const columns = [
     <Modal v-model="formOpen" :title="editingId ? '编辑监控目录' : '新增监控目录'">
       <div class="field">
         <label class="field-label">目录路径</label>
-        <div class="row">
-          <input class="input" :value="form.path" placeholder="请选择目录" readonly />
-          <button class="btn" type="button" @click="pickerOpen = true">浏览…</button>
+        <!-- 新增：不给「填不进去的输入框」，直接引导去选；选完把路径展示出来
+             编辑：路径不可改（后端也不支持改路径），只如实展示 -->
+        <div v-if="editingId" class="picked-path">
+          <span class="picked-icon">📁</span>
+          <span class="picked-text">{{ form.path }}</span>
         </div>
-        <div v-if="!editingId" class="field-hint">仅可选择白名单根目录下的路径；挂载进容器的目录会自动并入白名单</div>
+        <div v-else-if="form.path" class="picked-path">
+          <span class="picked-icon">📁</span>
+          <span class="picked-text">{{ form.path }}</span>
+          <button class="btn btn--sm" type="button" @click="pickerOpen = true">重新选择</button>
+        </div>
+        <button v-else class="btn btn--primary" type="button" @click="pickerOpen = true">
+          选择文件夹…
+        </button>
+        <div v-if="!editingId" class="field-hint">
+          在容器已挂载的目录里逐级选择。要处理别的位置，请在 docker-compose 的 volumes 里挂载它
+        </div>
       </div>
       <div class="field">
         <label class="field-label">扫描方式</label>
@@ -500,6 +508,25 @@ const columns = [
 </template>
 
 <style scoped>
+/* 已选目录的展示块：选完把路径摆出来，比一个填不进去的输入框有用 */
+.picked-path {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-soft);
+}
+.picked-icon {
+  flex-shrink: 0;
+}
+.picked-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-sm);
+  word-break: break-all;
+}
 .card-loading {
   display: flex;
   align-items: center;

@@ -25,7 +25,9 @@ os.environ["VS_DATA_DIR"] = str(DATA)
 from app import config                                     # noqa: E402
 
 config.ensure_dirs()
-config.save_settings({"watch": {"allowedRoots": [str(TMP)]}})
+# 可访问范围只由容器挂载决定（没有白名单设置了）。本机没有 /proc，
+# 用环境变量代替「挂载了哪些目录」。
+os.environ["VS_EXTRA_ROOTS"] = str(TMP)
 
 # 每个模式一个目录，各放一个小视频文件。
 # 故意用小文件：阈值 3.9G 下它不会入队，所以不会真的触发 ffmpeg 切割，

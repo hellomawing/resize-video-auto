@@ -41,6 +41,10 @@ db.init_db()
 INBOX = TMP / "inbox"
 INBOX.mkdir(parents=True)
 
+# 可访问范围只由容器挂载决定（白名单设置已删除）。本机没有 /proc，
+# 用环境变量代替「挂载了哪些目录」。
+os.environ["VS_EXTRA_ROOTS"] = str(INBOX)
+
 # 一个「切不动」的 mp4：内容是垃圾字节，ffprobe 读不出时长。
 # 用垃圾而不是真视频是刻意的 —— 本脚本只关心失败路径，不需要 ffmpeg 参与，
 # 因此它在任何机器上都能跑（连装没装 ffmpeg 都不影响结论）。
@@ -52,8 +56,7 @@ NOT_SUPPORTED.write_bytes(b"\x00" * 8192)
 # 整体替换式保存：没写的键会回落到默认值（save_settings 不是补丁）
 config.save_settings({
     "split": {"size": "1K", "recursive": True, "markSource": "rename"},
-    "watch": {"allowedRoots": [str(INBOX)], "settleSeconds": 0,
-              "realtime": False, "pollInterval": 3600},
+    "watch": {"settleSeconds": 0, "realtime": False, "pollInterval": 3600},
 })
 
 from fastapi.testclient import TestClient                     # noqa: E402
@@ -130,7 +133,7 @@ with TestClient(app) as client:
     check("PUT 的状态码", r.status_code, 200)
     check("不支持的后缀被剔除、合法的保留", r.json()["split"]["ext"], [".mp4", ".ts"])
 
-    print("== 3. 老配置文件（带 mode 与 avi）自动清理 ==")
+    print("== 3. 老配置文件（带 mode、avi 与已废弃的白名单）自动清理 ==")
     # 用 json.dumps 而不是手拼字符串：Windows 路径里的反斜杠会把 JSON 转义搞坏
     config.SETTINGS_PATH.write_text(json.dumps({
         "split": {"mode": "bytes", "ext": [".avi", ".mp4", ".mkv"]},
@@ -139,12 +142,13 @@ with TestClient(app) as client:
     loaded = config.load_settings()
     check("旧 mode 被丢掉", "mode" in loaded["split"], False)
     check("旧后缀被过滤", loaded["split"]["ext"], [".mp4", ".mkv"])
+    check("已废弃的 allowedRoots 被清掉",
+          "allowedRoots" in loaded["watch"], False)
 
     # 恢复成后续测试要用的配置
     config.save_settings({
         "split": {"size": "1K", "recursive": True, "markSource": "rename"},
-        "watch": {"allowedRoots": [str(INBOX)], "settleSeconds": 0,
-                  "realtime": False, "pollInterval": 3600},
+        "watch": {"settleSeconds": 0, "realtime": False, "pollInterval": 3600},
     })
 
     print("== 4. 扫描只认支持格式：avi 根本不该被看到 ==")

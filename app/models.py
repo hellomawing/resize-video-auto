@@ -82,14 +82,12 @@ class DirShortcut(CamelModel):
 class BrowseOut(CamelModel):
     path: str
     parent: Optional[str] = None
-    #: 只含**实际存在**的根目录。配置里那些不存在的挪到 missing_roots，
-    #: 免得选择器里挂着一堆点了就报错的死入口。
+    #: 可访问的根目录 = 容器里实际挂载进来的数据目录（自动探测，没有白名单）。
     roots: list[str] = Field(default_factory=list)
-    missing_roots: list[str] = Field(default_factory=list)
     dirs: list[DirItem] = Field(default_factory=list)
     shortcuts: list[DirShortcut] = Field(default_factory=list)
     # 根目录不可枚举时（fnOS 的 /vol1）自动探测到的、**可直接进入**的子目录，
-    # 如 /vol1/1000 —— 前端把它们摆成「点一下直达」的入口，用户不必去改白名单。
+    # 如 /vol1/1000 —— 前端把它们摆成「点一下直达」的入口。
     suggested_roots: list[str] = Field(default_factory=list)
     video_count: int = 0
     error: Optional[str] = None
@@ -127,7 +125,7 @@ class WatchSettings(CamelModel):
     settle_seconds: int = 60
     min_size: str = "0"
     ignore_suffixes: list[str] = Field(default_factory=list)
-    allowed_roots: list[str] = Field(default_factory=list)
+    # 没有 allowed_roots：可访问范围只由容器挂载决定，不再是用户可配置项
 
 
 class ServerSettings(CamelModel):

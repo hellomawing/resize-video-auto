@@ -324,11 +324,6 @@ async function doImport(): Promise<void> {
           <label class="field-label">忽略的后缀</label>
           <TagInput v-model="form.watch.ignoreSuffixes" placeholder="输入后缀后回车，如 .tmp" />
         </div>
-        <div class="field">
-          <label class="field-label">可访问根目录白名单</label>
-          <TagInput v-model="form.watch.allowedRoots" placeholder="输入根目录后回车，如 /vol1" />
-          <div class="field-hint">约束目录浏览与监控目录添加，超出范围的路径会被后端拒绝；挂载进容器的目录会自动并入，无需在此重复填写</div>
-        </div>
       </div>
 
       <!-- 服务参数 -->
@@ -383,7 +378,7 @@ async function doImport(): Promise<void> {
           <div class="field-hint">
             导入会<strong>整体替换当前设置</strong>；监控目录按<strong>路径</strong>合并
             （已存在的更新成导入内容，没有的新增）；归档目录记录只增不减。
-            路径不在白名单里的监控目录会被跳过。<strong>视频文件本身不受影响。</strong>
+            路径不在容器已挂载目录内的监控目录会被跳过。<strong>视频文件本身不受影响。</strong>
           </div>
         </div>
       </div>

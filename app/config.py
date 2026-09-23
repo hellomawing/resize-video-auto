@@ -90,9 +90,8 @@ DEFAULT_SETTINGS = {
         "settleSeconds": 60,        # 文件稳定检测：大小与修改时间连续多久不变才入队
         "minSize": "0",             # 小于该大小的文件忽略
         "ignoreSuffixes": [".tmp", ".part", ".crdownload", ".!qb", ".download"],
-        # 可访问根目录白名单：约束网页上的目录浏览与监控目录添加。
-        # 容器里通常把 NAS 的存储空间整盘挂进来，所以这里是 /vol1 … /vol4。
-        "allowedRoots": ["/vol1", "/vol2", "/vol3", "/vol4"],
+        # 没有「可访问根目录白名单」：网页上能浏览/添加的范围**只由容器挂载决定** ——
+        # 你在 docker-compose 里挂进来的目录就是范围（见 app/api/system.py 的挂载探测）。
     },
     "server": {
         "host": "0.0.0.0",
@@ -236,8 +235,9 @@ def _normalize_settings(s: dict) -> dict:
         watch["minSize"] = "0"
     if not isinstance(watch.get("ignoreSuffixes"), list):
         watch["ignoreSuffixes"] = list(DEFAULT_SETTINGS["watch"]["ignoreSuffixes"])
-    if not isinstance(watch.get("allowedRoots"), list) or not watch["allowedRoots"]:
-        watch["allowedRoots"] = list(DEFAULT_SETTINGS["watch"]["allowedRoots"])
+    # 历史上的「可访问根目录白名单」已删除（范围改由容器挂载决定）。
+    # 旧 settings.json 里可能还留着这个键，直接丢弃，别让它继续出现在设置里。
+    watch.pop("allowedRoots", None)
 
     server = s["server"]
     try:
