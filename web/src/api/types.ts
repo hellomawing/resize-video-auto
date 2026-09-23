@@ -167,6 +167,26 @@ export interface WatchFilters {
   nameExclude: FilterRule[]
 }
 
+/**
+ * 「命中预览」的试算结果：拿一条样例路径去问这套规则会不会把它挡下。
+ *
+ * 判定与真实扫描**同源**（后端 services.filters.explain），所以预览说
+ * 「会被处理」，扫描时就真的会处理。纯计算，不要求文件真实存在。
+ */
+export interface WatchFilterPreview {
+  /** false = 规则本身有问题（正则编译不过），此时没有判定结论 */
+  ok: boolean
+  message: string
+  /** 实际参与比对的每一段名字，照实回显 —— 规则到底在跟什么比，看这里 */
+  parts: string[]
+  suffix: string
+  /** false = 一条规则都没配，什么都不会被挡 */
+  hasRules: boolean
+  skipped: boolean
+  /** skipped 为真时的原因，与扫描结果「跳过明细」里的文案同源 */
+  reason: string
+}
+
 export interface WatchPoint {
   id: string
   path: string

@@ -152,6 +152,63 @@ def dir_pruned(compiled: dict, rel_parts) -> bool:
     return any(_hit(rule, parts, lowered) for rule in compiled["exclude"])
 
 
+def _sample_parts(value: str, base: str = None) -> tuple:
+    """把用户敲的样例路径切成「参与比对的段」。
+
+    与扫描时的 scanner._relative_parts(path, roots) 同口径 —— 都是监控目录
+    **之下**的每一段（含文件名自己）。区别只在输入来源：那边是文件系统里的
+    真实路径，这边是用户手敲的字符串，所以两种写法都要认：
+
+        base 为空、或给的是相对路径  ->  整段照用
+        给的是绝对路径且落在 base 里 ->  去掉 base 前缀再切
+
+    认不出来就按原样切，不做「文件名兜底」—— 那边的兜底是拿不到扫描根时的
+    保守策略（宁可少命中），在这里反而会让用户看着自己敲的路径被吃掉一段。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ()
+    if base:
+        try:
+            rel = Path(text).relative_to(Path(str(base).strip()))
+        except ValueError:
+            pass
+        else:
+            if rel.parts:
+                return tuple(rel.parts)
+    return tuple(p for p in Path(text).parts if p not in ("", "."))
+
+
+def preview(raw, value: str, base: str = None) -> dict:
+    """试算「这条路径会不会被这套规则挡下」——给编辑页的命中预览用。
+
+    刻意复用 explain() 而**不是**另写一套「预览用的判断」：预览说会处理、
+    实际扫描却跳过（或反过来）比压根没有预览更糟。所以这里只多做两件事：
+    把用户敲的字符串切成参与比对的段，以及在没有规则时直接给结论。
+
+    不校验文件是否存在 —— 用户往往是拿一个脑子里的文件名去试规则，而不是
+    先去目录里翻出一个真实文件。纯字符串计算，不碰磁盘、不写配置。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return {"ok": False, "message": "请输入一个样例路径"}
+    parts = _sample_parts(text, base)
+    if not parts:
+        return {"ok": False, "message": "请输入一个样例路径"}
+
+    suffix = Path(text).suffix.lower()
+    compiled = compile_filters(raw)
+    if compiled is None:
+        # 一条规则都没有 = 不过滤。就过滤规则而言什么都不会被挡（系统设置的
+        # 扩展名、最小体积这些是另一回事，它们不在这套规则的职责范围内）
+        return {"ok": True, "parts": list(parts), "suffix": suffix,
+                "hasRules": False, "skipped": False, "reason": ""}
+
+    reason = explain(compiled, text, parts)
+    return {"ok": True, "parts": list(parts), "suffix": suffix,
+            "hasRules": True, "skipped": bool(reason), "reason": reason or ""}
+
+
 def build_matchers(raw):
     """给 core.splitter.collect_files 用的两个回调；无规则时返回 (None, None)。
 

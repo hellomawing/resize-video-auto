@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { FilterMode, FilterRule, WatchFilters } from '../api/types'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import { previewWatchFilters } from '../api/watchpoints'
+import type { FilterMode, FilterRule, WatchFilterPreview, WatchFilters } from '../api/types'
 
 // 监控目录的「只看这些 / 不看这些」编辑器。
 //
@@ -15,6 +16,8 @@ const props = defineProps<{
   modelValue: WatchFilters
   /** 系统设置里已启用的格式（「设置 → 处理的扩展名」） */
   availableExts: string[]
+  /** 当前选的监控目录。只用于把「整条粘进来的绝对路径」相对化 */
+  basePath?: string
 }>()
 
 const emit = defineEmits<{
@@ -89,6 +92,90 @@ const invalidRule = computed(() => {
 })
 
 defineExpose({ invalidRule })
+
+// ---------------------------------------------------------------- 命中预览
+//
+// 规则是纯文本匹配，光看写法很难确定它到底会挡住什么 —— 尤其是两条规则
+// 叠在一起、或者拿正则去写「含 A 且不含 B」的时候（跨不了路径段，见下面的
+// 说明）。与其让用户配完保存、再去扫描结果的「跳过明细」里反查，不如在边上
+// 放个输入框，敲一条样例路径就知道结果。
+//
+// 判定一律问后端（services.filters.explain，和真实扫描同一份逻辑），前端
+// **不自己算**：预览说会被处理、实际扫描却跳过，那比没有预览更糟。
+const samplePath = ref('')
+const previewing = ref(false)
+const previewResult = ref<WatchFilterPreview | null>(null)
+const previewError = ref('')
+let previewTimer: number | undefined
+// 只认最新一次请求的结果。网络有快有慢，先发的可能后回 —— 不挡的话，
+// 界面上就会停着一个「上一次输入」的结论，那比空着更误导人
+let previewSeq = 0
+
+async function runPreview(): Promise<void> {
+  const seq = ++previewSeq
+  previewing.value = true
+  try {
+    const result = await previewWatchFilters({
+      path: samplePath.value.trim(),
+      basePath: props.basePath || undefined,
+      filters: props.modelValue,
+    })
+    if (seq !== previewSeq) return
+    previewResult.value = result
+    previewError.value = ''
+  } catch (e) {
+    if (seq !== previewSeq) return
+    previewResult.value = null
+    previewError.value = e instanceof Error ? e.message : '预览失败'
+  } finally {
+    if (seq === previewSeq) previewing.value = false
+  }
+}
+
+/**
+ * 规则或样例一变就重算，防抖 300ms。
+ *
+ * 输入过程中的半截路径不值得每敲一个键就往返一次；但**不跳过**正则写错的
+ * 情况 —— 前端用的是浏览器正则、后端是 Python 正则，两者语法并不完全一样
+ * （比如 `(?P<name>…)` 后端认、浏览器不认）。所以「正则到底行不行」这件事
+ * 交给后端下结论，本地那行红字只当提前提示。
+ */
+function schedulePreview(): void {
+  window.clearTimeout(previewTimer)
+  if (!samplePath.value.trim()) {
+    previewSeq += 1          // 作废在途请求，别让它回来把空态填上
+    previewResult.value = null
+    previewError.value = ''
+    previewing.value = false
+    return
+  }
+  previewing.value = true
+  previewTimer = window.setTimeout(runPreview, 300)
+}
+
+watch([samplePath, () => props.modelValue], schedulePreview, { deep: true })
+onUnmounted(() => window.clearTimeout(previewTimer))
+
+/** 一句话结论（跟徽章配套显示） */
+const previewText = computed(() => {
+  const r = previewResult.value
+  if (!r) return ''
+  if (!r.ok) return r.message
+  if (r.skipped) return r.reason
+  return r.hasRules ? '通过全部规则' : '当前没有配置规则，什么样的文件都不会被挡'
+})
+
+const badgeText = computed(() => {
+  const r = previewResult.value
+  if (!r || !r.ok) return '规则有问题'
+  return r.skipped ? '会被跳过' : '会被处理'
+})
+
+const badgeClass = computed(() => {
+  const r = previewResult.value
+  if (!r || !r.ok) return 'pv-badge--bad'
+  return r.skipped ? 'pv-badge--out' : 'pv-badge--in'
+})
 
 const PLACEHOLDER: Record<FilterMode, string> = {
   contains: '如：相机',
@@ -202,6 +289,37 @@ const PLACEHOLDER: Record<FilterMode, string> = {
         例：<code>包含 相机</code> 能命中 <code>相机导入/2026/a.mp4</code> 和
         <code>SONY-相机.mp4</code>；<code>正则 ^DJI_\d{4}\.mp4$</code> 只命中
         <code>DJI_0002.mp4</code>（<strong>别忘了把扩展名算进去</strong>）。
+      </div>
+    </div>
+
+    <!-- ③ 命中预览 -->
+    <div class="rules-block">
+      <div class="rules-title">命中预览</div>
+      <input
+        v-model="samplePath"
+        class="input"
+        placeholder="敲一个文件名或相对路径试试，如：相机导入/2026/DJI_0002.mp4"
+      />
+      <div v-if="samplePath.trim()" class="pv">
+        <div v-if="previewing" class="pv-line faint">正在算…</div>
+        <template v-else-if="previewResult">
+          <div class="pv-line">
+            <span class="pv-badge" :class="badgeClass">{{ badgeText }}</span>
+            <span class="pv-why">{{ previewText }}</span>
+          </div>
+          <div class="pv-parts">
+            参与比对：
+            <span v-for="(p, i) in previewResult.parts" :key="i" class="pv-part">{{ p }}</span>
+            <span v-if="previewResult.suffix" class="pv-part pv-part--ext">
+              扩展名 {{ previewResult.suffix }}
+            </span>
+          </div>
+        </template>
+        <div v-else-if="previewError" class="pv-line pv-line--bad">{{ previewError }}</div>
+      </div>
+      <div class="rules-hint">
+        只是照着上面的规则算一遍，不扫描、也不需要这个文件真实存在。
+        路径按「监控目录之下」算，与真实扫描用的是同一套判断。
       </div>
     </div>
   </div>
@@ -347,5 +465,69 @@ const PLACEHOLDER: Record<FilterMode, string> = {
   font-size: var(--font-size-xs);
   color: var(--color-danger);
   overflow-wrap: anywhere;
+}
+/* 命中预览：结论贴在输入框下面，和规则区同处一屏 */
+.pv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+.pv-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--font-size-sm);
+}
+.pv-why {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pv-line--bad {
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+.pv-badge {
+  flex-shrink: 0;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+.pv-badge--in {
+  background: var(--color-primary-soft);
+  color: var(--color-primary-dark);
+}
+.pv-badge--out,
+.pv-badge--bad {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+/* 照实摆出「到底在跟什么比」——正则跨不了路径段这类困惑，看一眼这行就明白 */
+.pv-parts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+}
+.pv-part {
+  font-family: var(--font-mono);
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  overflow-wrap: anywhere;
+}
+.pv-part--ext {
+  border-style: dashed;
+  color: var(--color-text-soft);
 }
 </style>

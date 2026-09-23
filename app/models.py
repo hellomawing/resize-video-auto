@@ -182,6 +182,41 @@ class WatchFilters(CamelModel):
     name_exclude: list[FilterRule] = Field(default_factory=list)
 
 
+class FilterPreviewIn(CamelModel):
+    """试算「这条路径会不会被这套规则挡下」——编辑页的命中预览。
+
+    只做字符串判断，**不要求这个文件真的存在**：用户往往是拿一个脑子里的
+    文件名去试规则，而不是先去目录里翻出一个真实文件。所以这里既不校验
+    存在性，也不要求路径落在可浏览范围内。
+    """
+    path: str
+    # 当前表单里的监控目录路径。给了它才能把「整条粘进来的绝对路径」
+    # 相对化；不给就按相对路径处理
+    base_path: str = ""
+    # 允许为空 = 「一条规则都没配」，此时结论必然是「会被处理」
+    filters: Optional[WatchFilters] = None
+
+
+class FilterPreviewOut(CamelModel):
+    """预览结论。
+
+    ok=False 表示**规则本身有问题**（正则编译不过），此时没有判定结论；
+    这类问题同样用 200 返回，由 message 说明 —— 预览是「帮我看看」而不是
+    「保存配置」，用 400 会逼前端去区分「网络坏了」和「正则写错了」。
+    """
+    ok: bool = True
+    message: str = ""
+    # 实际参与比对的每一段名字，**照实回显**：用户困惑「我这条规则在跟什么
+    # 比」时，看着这一列就明白了（尤其是正则跨不了路径段这个坑）
+    parts: list[str] = Field(default_factory=list)
+    suffix: str = ""
+    # 有没有配规则。False = 不过滤，什么都不会被挡
+    has_rules: bool = False
+    skipped: bool = False
+    # skipped=True 时的原因，与扫描结果「跳过明细」里的文案完全同源
+    reason: str = ""
+
+
 class WatchPoint(CamelModel):
     id: str
     path: str

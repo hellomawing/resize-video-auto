@@ -12,8 +12,9 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from .. import config, db
-from ..models import (ScanIn, ScanResult, WatchPoint, WatchPointCreate,
-                      WatchPointUpdate)
+from ..models import (FilterPreviewIn, FilterPreviewOut, ScanIn, ScanResult,
+                      WatchPoint, WatchPointCreate, WatchPointUpdate)
+from ..services import filters as filter_rules
 from ..services import scanner, scheduler
 from ..services.monitor import monitor as monitor_service
 from .system import ensure_allowed
@@ -63,6 +64,27 @@ def _validated_filters(payload) -> dict:
 @router.get("", response_model=list[WatchPoint])
 def list_watchpoints() -> list:
     return [_to_model(wp) for wp in config.load_watchpoints()]
+
+
+# 刻意声明在 /{wp_id} 系列路由**之前**：路径段数虽然不同、现在还撞不上，
+# 但先占住这个具体名字，将来万一加了 POST /{wp_id} 也不会把它吃掉
+@router.post("/filter-preview", response_model=FilterPreviewOut)
+def preview_filters(payload: FilterPreviewIn) -> FilterPreviewOut:
+    """
+    试算一条样例路径会不会被这套规则挡下 —— 编辑页「命中预览」用的。
+
+    纯计算：不读磁盘、不写配置、不碰扫描队列，可以随便点。
+    规则怎么算完全交给 services.filters（与真实扫描同一份逻辑），
+    这里只负责把规则归一化一遍，好让坏正则有个说法。
+    """
+    raw = payload.filters.model_dump(by_alias=True) if payload.filters else {}
+    try:
+        normalized = config.normalize_filters(raw, strict=True)
+    except ValueError as exc:
+        # 正则编译不过：预览照样 200，由 message 说明是哪一条
+        return FilterPreviewOut(ok=False, message=str(exc))
+    return FilterPreviewOut(
+        **filter_rules.preview(normalized, payload.path, payload.base_path))
 
 
 @router.post("", response_model=WatchPoint)

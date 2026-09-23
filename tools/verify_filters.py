@@ -18,6 +18,8 @@
   5. 命中排除规则的目录整棵不进入（纯性能优化，但结果必须与「进去后再逐个
      判断」完全一致 —— 所以还要验证被剪掉的文件在跳过明细里**不出现**）
   6. 空规则 = 不过滤：老监控目录升级后行为一字不变
+  7. 编辑页的「命中预览」必须与真实扫描**同源**（同一份 explain），
+     否则预览说会处理、实际却跳过，比没有预览更糟；且它是纯计算
 
     python tools/verify_filters.py
 """
@@ -261,9 +263,79 @@ with TestClient(app) as client:
 
     client.delete("/api/watchpoints/" + wp_id)
 
-# ---------------------------------------------------------------- 6. 老数据
+# ---------------------------------------------------------------- 6. 命中预览
 
-print("== 6. 老监控目录迁移（没有 filters 键）==")
+print("== 6. 命中预览（POST /api/watchpoints/filter-preview）==")
+
+PREVIEW_RULES = {
+    "extInclude": [".mp4"],
+    "nameInclude": [{"mode": "contains", "value": "相机"}],
+    "nameExclude": [{"mode": "contains", "value": "原片"}],
+}
+
+with TestClient(app) as client:
+    def pv(path, rules=None, base=""):
+        """rules 传 {} 表示「空规则」；不传则用 PREVIEW_RULES"""
+        body = {"path": path,
+                "filters": PREVIEW_RULES if rules is None else rules}
+        if base:
+            body["basePath"] = base
+        return client.post("/api/watchpoints/filter-preview", json=body).json()
+
+    r = pv("相机导入/2026/a.mp4")
+    check("仅限命中 -> 处理", (r["ok"], r["skipped"]), (True, False))
+    check("  参与比对的段照实回显", r["parts"], ["相机导入", "2026", "a.mp4"])
+    check("  识别到的扩展名", r["suffix"], ".mp4")
+
+    r = pv("相机导入/2026/原片/a.mp4")
+    check("中段命中排除 -> 跳过", (r["ok"], r["skipped"]), (True, True))
+    check("  原因是排除规则", r["reason"], "命中排除规则「原片」")
+
+    r = pv("其他/a.mp4")
+    check("不满足仅限 -> 跳过", r["skipped"], True)
+    check("  原因是仅限", r["reason"], "不符合本目录的「仅限」规则")
+
+    r = pv("相机导入/a.mkv")
+    check("类型不在仅限内 -> 跳过", r["reason"], "不在仅限的文件类型内（.mp4）")
+
+    # 整条绝对路径粘进来：给了 basePath 才能相对化
+    r = pv(str(MEDIA / "相机导入" / "a.mp4"), base=str(MEDIA))
+    check("绝对路径按监控目录相对化", r["parts"], ["相机导入", "a.mp4"])
+    check("  结论与相对路径一致", (r["hasRules"], r["skipped"]), (True, False))
+    r = pv(str(MEDIA / "相机导入" / "a.mp4"))
+    check("不给 base 时按原样切段", r["parts"][-1], "a.mp4")
+
+    r = pv("相机导入/a.mp4", rules={})
+    check("空规则 -> 不挡任何东西",
+          (r["hasRules"], r["skipped"], r["reason"]), (False, False, ""))
+
+    r_raw = client.post("/api/watchpoints/filter-preview", json={
+        "path": "相机导入/a.mp4",
+        "filters": {"nameExclude": [{"mode": "regex", "value": "(["}]}})
+    check("坏正则不做成 400（预览是查询不是保存）", r_raw.status_code, 200)
+    check("  改用 ok=False 说明", r_raw.json()["ok"], False)
+    check("  文案点出是正则", "正则" in r_raw.json()["message"], True)
+
+    check("空路径 -> ok=False", pv("")["ok"], False)
+
+    # 最要紧的一条：预览必须与真实扫描同源，不能是「预览看的另一套算法」。
+    # 逐条拿 filters.explain 对一遍，结论和原因文案都要一致。
+    _compiled = fmod.compile_filters(config.normalize_filters(PREVIEW_RULES))
+    _samples = ["相机导入/2026/a.mp4", "其他/a.mp4",
+                "相机导入/2026/原片/a.mp4", "相机导入/a.mkv"]
+    same = all(
+        pv(s)["reason"]
+        == (fmod.explain(_compiled, s, fmod._sample_parts(s)) or "")
+        for s in _samples
+    )
+    check("预览结论与 explain 逐条同源", same, True)
+
+    check("预览是纯计算，不产生监控目录",
+          client.get("/api/watchpoints").json(), [])
+
+# ---------------------------------------------------------------- 7. 老数据
+
+print("== 7. 老监控目录迁移（没有 filters 键）==")
 config.WATCHPOINTS_PATH.write_text(json.dumps([{
     "id": "wp_old", "path": str(MEDIA), "scanMode": "manual",
 }], ensure_ascii=False), encoding="utf-8")

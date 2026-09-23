@@ -254,7 +254,12 @@ async function save(): Promise<void> {
           两边都通过的文件才会被处理。被规则挡下的文件不会消失，会出现在扫描结果的
           「跳过明细」里。
         </div>
-        <FilterRulesEditor ref="rulesRef" v-model="form.filters" :available-exts="availableExts" />
+        <FilterRulesEditor
+          ref="rulesRef"
+          v-model="form.filters"
+          :available-exts="availableExts"
+          :base-path="form.path"
+        />
       </div>
 
       <!-- 底部固定操作栏：规则区很长，保存按钮不该被滚到看不见 -->
