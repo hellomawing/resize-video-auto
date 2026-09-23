@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from .. import config, db
-from ..models import ConfigBundle, ImportResult, Settings
+from ..models import ConfigBundle, ImportResult, Settings, SettingsPatch
 from ..services import scheduler
 from ..services.events import bus
 # 注意：要的是模块里那个单例，不是模块本身
@@ -27,18 +27,47 @@ def read_settings() -> Settings:
     return Settings(**config.load_settings())
 
 
-@router.put("", response_model=Settings)
-def write_settings(payload: Settings) -> Settings:
+def _apply_settings(saved: dict, source: str | None = None) -> Settings:
     """
-    保存设置后要立刻让改动生效：
+    设置落盘后的公共收尾：让改动立刻生效，再通知其它打开的页面。
+
       * 监控服务重新装配（实时监听开关、稳定检测参数可能变了）
       * 监控目录的扫描计划重排（时区可能变了，cron 的触发时刻跟着变）
+
+    source 是发起这次修改的前端自报的标识，原样带进广播 —— 发起端据此忽略
+    自己的通知。它手里已经有本次的返回值，再重新拉一遍反而会把别的 tab 里
+    尚未提交的输入冲掉。
     """
-    saved = config.save_settings(payload.model_dump(by_alias=True))
     monitor_service.reload()
     scheduler.reload_watchpoint_jobs()
-    bus.publish({"type": "settings.updated"})
+    event: dict = {"type": "settings.updated"}
+    if source:
+        event["source"] = source
+    bus.publish(event)
     return Settings(**saved)
+
+
+@router.put("", response_model=Settings)
+def write_settings(payload: Settings, source: str | None = None) -> Settings:
+    """
+    整体替换。缺字段会打回默认值，所以只用于「导入配置」这类整份覆盖的场景；
+    界面上改单个开关请走下面的 PATCH。
+    """
+    return _apply_settings(
+        config.save_settings(payload.model_dump(by_alias=True)), source
+    )
+
+
+@router.patch("", response_model=Settings)
+def patch_settings(payload: SettingsPatch, source: str | None = None) -> Settings:
+    """
+    字段级更新：只动传进来的字段，其余保持当前值。
+
+    exclude_unset 让「没传的字段」与「显式传 null 的字段」区分开 ——
+    这里只认前者，所以前端没提交过的项一个都不会被碰。
+    """
+    partial = payload.model_dump(by_alias=True, exclude_unset=True)
+    return _apply_settings(config.patch_settings(partial), source)
 
 
 @router.get("/export", response_model=ConfigBundle)

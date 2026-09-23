@@ -92,6 +92,31 @@
 
 ### GET /api/settings
 ### PUT /api/settings（body 为完整 Settings，返回保存后的 Settings）
+### PATCH /api/settings（body 为 SettingsPatch，返回合并后的完整 Settings）
+
+两者的差别必须说清楚，混用会丢配置：
+
+| | PUT | PATCH |
+|---|---|---|
+| 合并基准 | `DEFAULT_SETTINGS` | **当前已保存的设置** |
+| 没传的字段 | 打回默认值 | 保持不动 |
+| 用途 | 导入配置这类整份覆盖 | 界面上「改一个开关就落盘」 |
+| 可用字段 | 完整 Settings | 只列了界面能改的那些：不含派生的 `all`，也不含界面上没有的 `debug` |
+
+⚠️ 界面上的自动保存**必须**走 PATCH。改用 PUT 会把用户其它自定义项一起打回默认，
+表现就是「拨了一下『实时监听』，切分参数全没了」。`tools/verify_settings_patch.py`
+专门盯着这条语义。
+
+`SettingsPatch` 的三块都可选，块内字段也各自可选，所以
+`{"watch": {"realtime": false}}` 只改这一个字段。显式传 `null` 等同「没传」
+（不会被当成「清空」）；不认识的字段直接忽略，不报错。
+
+两个接口落盘后的收尾动作相同：重装监控服务、重排扫描计划、广播 `settings.updated`。
+
+可选 query 参数 `source`：调用方自报的标识，会**原样**放进广播里。设置页的自动保存
+会带上它，好在收到广播时认出「这条是我自己触发的」而不再重新拉取 —— 重新拉取会把
+同一个页面其它分栏里尚未提交的输入冲掉。
+
 ```json
 {
   "split": {
@@ -699,7 +724,7 @@ body：
 { "type": "job.progress", "jobId": "job_x", "progress": 0.42, "partsDone": 1, "partsTotal": 3, "phase": "splitting" }
 { "type": "scan.finished","watchpointId": "wp_x", "found": 12, "queued": 3 }
 { "type": "watchpoint.scan","watchpointId": "wp_x", "path": "/vol1/media/inbox" }
-{ "type": "settings.updated" }
+{ "type": "settings.updated", "source": "web-abc123" }
 { "type": "schedule.fired","scheduleId": "sc_x", "name": "每天凌晨 3 点" }
 { "type": "ping",         "serverTime": "2026-09-20T12:39:43+08:00" }
 ```

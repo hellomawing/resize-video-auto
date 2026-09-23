@@ -136,6 +136,17 @@ export interface Settings {
   server: ServerSettings
 }
 
+/**
+ * PATCH /api/settings 的请求体：只带要改的字段，其余保持不动。
+ * 与 PUT 的整体替换相对（PUT 少带一个字段就会把它打回默认值），
+ * 用于界面上「拨个开关就立刻生效」的那些项。
+ */
+export type SettingsPatch = {
+  split?: Partial<SplitSettings>
+  watch?: Partial<WatchSettings>
+  server?: Partial<ServerSettings>
+}
+
 // ---- 监控目录 ----
 // 扫描方式：realtime 实时监听 | interval 每隔 N 小时 | daily 每天 HH:MM | manual 仅手动
 export type ScanMode = 'realtime' | 'interval' | 'daily' | 'manual'
@@ -450,5 +461,5 @@ export type WsMessage =
   | { type: 'job.progress'; jobId: string; progress: number; partsDone: number; partsTotal: number; phase: JobPhase }
   | { type: 'scan.finished'; watchpointId: string | null; found: number; queued: number }
   | { type: 'watchpoint.scan'; watchpointId: string; path: string }
-  | { type: 'settings.updated' }
+  | { type: 'settings.updated'; source?: string }
   | { type: 'ping'; serverTime: string }

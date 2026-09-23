@@ -140,6 +140,48 @@ class Settings(CamelModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
 
 
+# PATCH /api/settings 的请求体。界面上一改就落盘的那些字段走它，一次只带一个字段；
+# 与 PUT 的整体替换相对 —— PUT 少带一个字段就会把它打回默认值，不适合「改一个开关」。
+#
+# 字段刻意少于 Settings：
+#   * all   是 by_size 的派生值，由 _normalize_settings 算出来，不给外部写入口
+#   * debug 界面上没有，也不对外开放
+class SplitSettingsPatch(CamelModel):
+    by_size: Optional[bool] = None
+    size: Optional[str] = None
+    seconds: Optional[float] = None
+    ext: Optional[list[str]] = None
+    recursive: Optional[bool] = None
+    outdir_mode: Optional[Literal["same", "custom"]] = None
+    outdir: Optional[str] = None
+    mark_source: Optional[MarkSource] = None
+    source_dir: Optional[str] = None
+    keep_metadata: Optional[bool] = None
+    overwrite: Optional[bool] = None
+
+
+class WatchSettingsPatch(CamelModel):
+    realtime: Optional[bool] = None
+    poll_interval: Optional[int] = None
+    settle_seconds: Optional[int] = None
+    min_size: Optional[str] = None
+    ignore_suffixes: Optional[list[str]] = None
+
+
+class ServerSettingsPatch(CamelModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    job_log_lines: Optional[int] = None
+
+
+class SettingsPatch(CamelModel):
+    """只改传进来的字段；三块都可选，每块内部也各自可选。"""
+
+    split: Optional[SplitSettingsPatch] = None
+    watch: Optional[WatchSettingsPatch] = None
+    server: Optional[ServerSettingsPatch] = None
+
+
 # ---------------------------------------------------------------- 监控目录
 
 # 扫描方式：realtime 实时监听 | interval 每隔 N 小时 | daily 每天 HH:MM | manual 仅手动

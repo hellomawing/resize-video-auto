@@ -153,6 +153,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
     for key, value in (override or {}).items():
         if key not in out:
             continue
+        # None 不是一份有效配置，只当「没写」处理。放过去会把整块结构替换成 None
+        # （PATCH 里显式传 null、或手改 JSON 时写了个 null 都会走到这），
+        # 后面的规范化逻辑再取字段就直接崩了。
+        if value is None:
+            continue
         if isinstance(out[key], dict) and isinstance(value, dict):
             out[key] = _deep_merge(out[key], value)
         else:
@@ -171,6 +176,22 @@ def load_settings() -> dict:
 def save_settings(data: dict) -> dict:
     with _lock:
         merged = _normalize_settings(_deep_merge(DEFAULT_SETTINGS, data))
+        _atomic_write(SETTINGS_PATH, merged)
+        return merged
+
+
+def patch_settings(partial: dict) -> dict:
+    """字段级局部更新：只动传进来的那些字段，其余保持当前值。
+
+    刻意不复用 save_settings —— 它的合并基准是 DEFAULT_SETTINGS，
+    只传 {"watch": {"realtime": False}} 会把 split、server 整块打回默认值。
+    这里以**当前设置**为基准，才是「改一个开关」该有的语义。
+    """
+    with _lock:
+        # _lock 是 RLock，这里重入取一次当前配置是安全的；
+        # 走同一条锁路径也保证了「读-改-写」不会被并发写插队。
+        current = load_settings()
+        merged = _normalize_settings(_deep_merge(current, partial))
         _atomic_write(SETTINGS_PATH, merged)
         return merged
 
