@@ -1,8 +1,8 @@
 services:
   video-splitter:
-    # ↓↓↓ 打包前必须改掉这一行：换成你用 docker/build-and-push.sh 推上去的镜像地址 ↓↓↓
-    # 留着 yourname 占位会在安装后拉不到镜像，cmd/install_init 会提前拦下并提示。
-    image: yourname/video-splitter:latest
+    # ↑ 发布者已把镜像推送到 Docker Hub；fork 的话改成你自己的镜像地址，
+    # 否则安装后会拉不到镜像（install_init 会提前拦下并提示）。
+    image: mawing/video-splitter:latest
     container_name: video-splitter
     restart: unless-stopped
     ports:

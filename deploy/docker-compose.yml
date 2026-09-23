@@ -9,7 +9,7 @@
 
 services:
   video-splitter:
-    image: ${VS_IMAGE:-yourname/video-splitter:latest}
+    image: ${VS_IMAGE:-mawing/video-splitter:latest}
     container_name: video-splitter
     restart: unless-stopped
     ports:

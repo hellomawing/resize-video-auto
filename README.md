@@ -1,9 +1,54 @@
 # 视频无损分割 · NAS 版
 
+[![License: MIT](https://img.shields.io/github/license/hellomawing/resize-video-auto)](./LICENSE)
+[![Docker Pulls](https://img.shields.io/docker/pulls/mawing/video-splitter)](https://hub.docker.com/r/mawing/video-splitter)
+
 把超大视频切成多段，**全程不重新编码**，画质音质零损失。给 NAS 用：加几个监控文件夹，
 新拷进来的视频自动发现并处理；也能按「每隔几小时 / 每天几点」排定时扫描。所有参数都在网页上改。
 
 支持两种部署形态：**Docker** 和 **飞牛 fnOS 应用（fpk）**。
+
+---
+
+## 快速上手（Quick Start）
+
+镜像已经公开在 Docker Hub 上（`mawing/video-splitter`，amd64 / arm64 双架构）。
+只想先用起来，不用自己构建：
+
+```bash
+# 镜像直接拉取运行（国内 NAS 连不上 Docker Hub 的，改看下面「部署方式一」章节）
+docker run -d --name video-splitter -p 8099:8099 \
+  -v /your/media/dir:/media \
+  mawing/video-splitter:latest
+```
+
+浏览器打开 `http://NAS的IP:8099` 就是控制台。
+
+用 `docker compose` 更省心（推荐，含健康检查、数据卷、按你的 uid 降权）：
+
+```yaml
+# docker-compose.yml
+services:
+  video-splitter:
+    image: mawing/video-splitter:latest
+    container_name: video-splitter
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    environment:
+      PUID: 1000        # 换成你的 uid（SSH 里执行 `id 你的用户名` 查）
+      PGID: 1000
+      UMASK: "022"
+    volumes:
+      - ./data:/data    # 配置与数据库
+      - /your/media/dir:/media   # 要处理的视频目录
+```
+
+```bash
+docker compose up -d
+```
+
+想自建或看更多部署选项（含飞牛 fpk 应用包），继续往下翻「先选一条路」。
 
 ---
 
@@ -80,10 +125,19 @@
 > 飞牛 fnOS 用户同样适用：飞牛自带 Docker，SSH 上去按下面的步骤做即可，
 > 不一定非要打成 fpk。
 
-### 1. 构建并推送镜像（只需要做一次）
+**最简单：直接用已发布的镜像**（详见顶部「快速上手」），`docker compose up -d` 即可，
+不需要任何构建。下面的内容给两类人：
 
-镜像支持 **amd64 和 arm64** 双架构。推一个多架构 manifest 之后，`docker pull` 会按机器
-自动选对的那一份，x86 与 ARM 的 NAS 不用分别维护镜像。
+- **包维护者 / 想换成自己的镜像地址**：看第 1 节构建并推送；
+- **NAS 连不上 Docker Hub**（国内常见）：看 1-B 在 NAS 上直接构建。
+
+### 1. 构建并推送镜像（包维护者 / 自建才需要）
+
+镜像已发布（`mawing/video-splitter`，amd64 / arm64 双架构）。如果你是 fork、或想推到自己
+账号下，才需要跑这一步；普通使用者直接 `docker pull mawing/video-splitter:latest` 即可。
+
+推一个多架构 manifest 之后，`docker pull` 会按机器自动选对的那一份，x86 与 ARM 的 NAS
+不用分别维护镜像。
 
 ```bash
 DOCKERHUB_USER=你的用户名 ./docker/build-and-push.sh
@@ -210,7 +264,7 @@ docker compose up -d
 
 | 变量 | 说明 |
 |------|------|
-| `VS_IMAGE` | 你的镜像地址，如 `zhangsan/video-splitter:latest` |
+| `VS_IMAGE` | 镜像地址，默认 `mawing/video-splitter:latest`；fork 改自己的 |
 | `VS_PORT` | 网页端口，默认 8099 |
 | `TZ` | 时区，**会影响「每隔几小时 / 每天几点」的触发时刻** |
 | `PUID` / `PGID` | 容器内进程的属主。SSH 到 NAS 执行 `id 你的用户名` 查 |
@@ -925,4 +979,6 @@ docs/api.md         前后端接口契约
 
 ## 许可
 
-个人自用工具，按需取用。
+本项目以 **MIT** 协议开源，详情见 [LICENSE](./LICENSE)。
+
+Copyright (c) 2026 CoderDusk <hellomawing@gmail.com>

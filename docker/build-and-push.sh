@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # 构建多架构镜像并推送到 Docker Hub
 #
-#   DOCKERHUB_USER=yourname ./docker/build-and-push.sh
+#   DOCKERHUB_USER=mawing ./docker/build-and-push.sh
 #
 # 可选环境变量：
 #   VERSION     镜像版本号，默认取 app/config.py 里的 APP_VERSION
