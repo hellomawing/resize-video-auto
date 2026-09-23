@@ -1,110 +1,66 @@
 # -*- coding: utf-8 -*-
-"""生成网站 favicon / logo 的全套 PNG 与 ICO。
+"""生成网站 favicon / 图标的全套 PNG 与 ICO。
 
-图标设计：被切开的播放按钮 —— 表达「视频无损分割」。
-几何结构与 web/public/favicon.svg 保持一致：
-  - 圆角底板（蓝紫渐变 #2563EB -> #4F46E5）
-  - 播放三角左半（白色）
-  - 播放三角右半（浅蓝 #93C5FD，向右上错位，表现"被切开"）
-  - 中缝切线（琥珀色 #FBBF24）
+图标唯一源图是 web/public/logo.png（透明底 PNG，胶片被剪刀切开的主题）。
+本脚本把它裁剪到内容包围盒、补成方形，再缩出各尺寸：
 
-用法：
-    python tools/gen_favicon.py
-输出：
     web/public/favicon-16x16.png
     web/public/favicon-32x32.png
-    web/public/apple-touch-icon.png   (180x180，方形不透明底，iOS 专用)
+    web/public/apple-touch-icon.png   (180x180，白底不透明，iOS 专用)
     web/public/favicon-192.png
     web/public/favicon-512.png
     web/public/favicon.ico            (16/32/48)
+
+用法：
+    python tools/gen_favicon.py
+
+换 logo 时只替换 web/public/logo.png 后重跑本脚本。
+注意：PNG 没法生成矢量 favicon.svg，站点 favicon 全走 PNG/ICO，
+favicon.svg 已随旧版手绘图标一并移除。
 """
-from PIL import Image, ImageDraw
+from PIL import Image
 import os
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "public")
+PUB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "public")
+SOURCE = os.path.join(PUB_DIR, "logo.png")
 
-# 设计基准（与 SVG viewBox 0 0 64 64 对应），超采样 16 倍抗锯齿
-BASE = 64
-SS = 16
-SIZE = BASE * SS  # 1024
-
-# 配色
-C_BG_FROM = (37, 99, 235)     # #2563EB
-C_BG_TO = (79, 70, 229)       # #4F46E5
-C_TRIANGLE_MAIN = (255, 255, 255)
-C_TRIANGLE_CUT = (147, 197, 253)  # #93C5FD
-C_CUT_LINE = (251, 191, 36)   # #FBBF24
-
-# 几何（基准 64 坐标系）
-TILE = (2, 2, 62, 62)
-TILE_RADIUS = 14
-TRI_LEFT = [(20, 18), (38, 26.4), (38, 37.6), (20, 46)]
-TRI_RIGHT = [(38, 26.4), (51, 32), (38, 37.6)]
-TRI_RIGHT_OFFSET = (5, -3)
-CUT_LINE = (39.75, 14, 42.25, 50)  # 位于两半之间 38~43 的中缝
+# 内容外围留白（占内容边长的比例），太小会让图标贴着圆角/边缘
+MARGIN_RATIO = 0.06
+SS = 1024  # 中间渲染尺寸，向下缩用 LANCZOS 抗锯齿
 
 
-def scale(pts, k):
-    return [(x * k, y * k) for x, y in pts]
-
-
-def make_gradient(size):
-    """对角线线性渐变：左上 -> 右下。"""
-    img = Image.new("RGB", (size, size))
-    px = img.load()
-    denom = 2 * (size - 1)
-    for y in range(size):
-        for x in range(size):
-            t = (x + y) / denom
-            px[x, y] = tuple(round(a + (b - a) * t) for a, b in zip(C_BG_FROM, C_BG_TO))
-    return img
-
-
-def render(square=False):
-    """渲染 logo。square=True 时输出方形不透明底（apple-touch-icon 用）。"""
-    k = SIZE / BASE
-    bg = make_gradient(SIZE).convert("RGBA")
-    canvas = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-
-    if square:
-        canvas.paste(bg, (0, 0))
-    else:
-        mask = Image.new("L", (SIZE, SIZE), 0)
-        ImageDraw.Draw(mask).rounded_rectangle(
-            [TILE[0] * k, TILE[1] * k, TILE[2] * k, TILE[3] * k],
-            radius=TILE_RADIUS * k, fill=255,
-        )
-        canvas.paste(bg, (0, 0), mask)
-
-    draw = ImageDraw.Draw(canvas)
-    draw.polygon(scale(TRI_LEFT, k), fill=C_TRIANGLE_MAIN)
-    right = [(x + TRI_RIGHT_OFFSET[0], y + TRI_RIGHT_OFFSET[1]) for x, y in TRI_RIGHT]
-    draw.polygon(scale(right, k), fill=C_TRIANGLE_CUT)
-    draw.rounded_rectangle(
-        [CUT_LINE[0] * k, CUT_LINE[1] * k, CUT_LINE[2] * k, CUT_LINE[3] * k],
-        radius=1.25 * k, fill=C_CUT_LINE,
-    )
-
-    if square:
-        return canvas.convert("RGB")
+def load_square() -> Image.Image:
+    """裁掉透明边、补成正方形（内容居中），返回 RGBA 大图。"""
+    im = Image.open(SOURCE).convert("RGBA")
+    bbox = im.getchannel("A").getbbox()
+    if bbox:
+        im = im.crop(bbox)
+    w, h = im.size
+    side = max(w, h)
+    margin = round(side * MARGIN_RATIO)
+    canvas_side = side + margin * 2
+    canvas = Image.new("RGBA", (canvas_side, canvas_side), (0, 0, 0, 0))
+    canvas.paste(im, ((canvas_side - w) // 2, (canvas_side - h) // 2))
     return canvas
 
 
-def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    big = render(square=False)
-    big_sq = render(square=True)
+def main() -> None:
+    big = load_square().resize((SS, SS), Image.LANCZOS)
 
     for size, name in [(16, "favicon-16x16.png"), (32, "favicon-32x32.png"),
                        (192, "favicon-192.png"), (512, "favicon-512.png")]:
-        big.resize((size, size), Image.LANCZOS).save(os.path.join(OUT_DIR, name))
+        big.resize((size, size), Image.LANCZOS).save(os.path.join(PUB_DIR, name))
         print("written:", name)
 
-    big_sq.resize((180, 180), Image.LANCZOS).save(os.path.join(OUT_DIR, "apple-touch-icon.png"))
+    # iOS 桌面图标：系统会自己加圆角，且不会保留透明度背后的样式，
+    # 透明底会被衬成黑色 —— 铺一层白底
+    white = Image.new("RGBA", (SS, SS), (255, 255, 255, 255))
+    white.alpha_composite(big)
+    white.convert("RGB").resize((180, 180), Image.LANCZOS).save(
+        os.path.join(PUB_DIR, "apple-touch-icon.png"))
     print("written: apple-touch-icon.png")
 
-    big.save(os.path.join(OUT_DIR, "favicon.ico"),
-             sizes=[(16, 16), (32, 32), (48, 48)])
+    big.save(os.path.join(PUB_DIR, "favicon.ico"), sizes=[(16, 16), (32, 32), (48, 48)])
     print("written: favicon.ico")
 
 

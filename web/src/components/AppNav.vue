@@ -18,7 +18,7 @@ const links = [
 <template>
   <aside class="nav">
     <div class="nav-brand">
-      <img class="nav-logo" src="/favicon.svg" alt="视频无损分割" />
+      <img class="nav-logo" src="/logo.png" alt="视频无损分割" />
       <div class="nav-brand-title">视频无损分割</div>
     </div>
 
@@ -62,7 +62,7 @@ const links = [
   gap: var(--space-3);
   padding: 0 var(--space-4) var(--space-4);
 }
-/* 品牌图标与站点 favicon 是同一张图：改 logo 只动 web/public/favicon.svg 一处 */
+/* 品牌图标源图是 web/public/logo.png：换 logo 只替换这一张图，再重跑 tools/gen_favicon.py */
 .nav-logo {
   width: 38px;
   height: 38px;
