@@ -149,7 +149,11 @@ with TestClient(app) as client:
     data = client.get("/api/browse", params={"path": str(MEDIA)}).json()
     check("子目录", sorted(d["path"] for d in data["dirs"]),
           sorted([str(INBOX), str(OUT), str(OUT2)]))
-    check("parent", data["parent"], str(TMP))
+    # 上一级只在**仍落在可访问范围内**时才下发：MEDIA 就是挂载根，
+    # 它的父目录 TMP 在容器里根本不可见，摆个「上一级」只会点出 403
+    check("挂载根不给「上一级」", data["parent"], None)
+    nav = client.get("/api/browse", params={"path": str(INBOX)}).json()
+    check("范围内的父目录照旧下发", nav["parent"], str(MEDIA))
     check("没有 error", data["error"], None)
     check("导航时也带 shortcuts", len(data["shortcuts"]), 3)
 

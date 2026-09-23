@@ -194,6 +194,20 @@ def _within(path: Path, roots) -> bool:
     return False
 
 
+def _parent_within(target: Path, roots) -> str | None:
+    """
+    上一级目录 —— 但只在它**仍落在可访问范围内**时才下发。
+
+    挂进来的往往是某个深层子目录（真机：/vol1/1000/video-split-in → /test-video），
+    它的父目录（`/` 或 `/vol1/1000`）本身并不在范围里；照直下发的话，前端会摆出
+    一个点了必然 403 的「上一级」按钮。
+    """
+    up = target.parent
+    if up == target:
+        return None
+    return str(up) if _within(up, roots) else None
+
+
 def ensure_allowed(path: Path, roots=None) -> Path:
     """
     确认路径落在容器**已挂载**的目录内。这是网页上所有「用户给路径」的入口
@@ -289,7 +303,7 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
     target = ensure_allowed(Path(path), roots)
 
     if not target.is_dir():
-        return BrowseOut(path=str(target), parent=str(target.parent),
+        return BrowseOut(path=str(target), parent=_parent_within(target, roots),
                          roots=root_texts, dirs=[], shortcuts=shortcuts,
                          video_count=0,
                          error="目录不存在，或者容器没有权限访问它"
@@ -325,10 +339,9 @@ def browse(path: str = Query(default=None, description="要浏览的目录，省
 
     # @ 开头的是系统目录（@appdata、@appshare 之类），排到后面去
     dirs.sort(key=lambda d: (d.name.startswith("@"), d.name.lower()))
-    parent = str(target.parent) if target.parent != target else None
-    return BrowseOut(path=str(target), parent=parent, roots=root_texts,
-                     dirs=dirs, shortcuts=shortcuts, suggested_roots=suggestions,
-                     video_count=videos, error=error)
+    return BrowseOut(path=str(target), parent=_parent_within(target, roots),
+                     roots=root_texts, dirs=dirs, shortcuts=shortcuts,
+                     suggested_roots=suggestions, video_count=videos, error=error)
 
 
 @router.get("/env")
