@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import Toggle from '../components/Toggle.vue'
 import Modal from '../components/Modal.vue'
 import TagInput from '../components/TagInput.vue'
@@ -28,6 +28,19 @@ const exporting = ref(false)
 const importing = ref(false)
 const confirmImport = ref(false)
 const pendingBundle = ref<ConfigBundle | null>(null)
+// 原生 file input 的外观没法跟这套按钮统一，所以藏起来、由「导入配置」按钮触发；
+// 文件名要在确认框里回显 —— 藏了 input 之后就只剩这一个地方能告诉用户选的是哪个文件
+const fileRef = ref<HTMLInputElement | null>(null)
+const pendingName = ref('')
+
+// 取消导入（或导入完成后关闭）就把待导入内容和文件名一起丢掉，
+// 免得下次打开确认框还挂着上一次选的文件
+watch(confirmImport, (open) => {
+  if (!open) {
+    pendingBundle.value = null
+    pendingName.value = ''
+  }
+})
 
 // bySize 是个布尔字段：true = 按大小切，false = 按时长切。这里用下拉框而不是开关——
 // 开关关上时的含义（「按时长」）正好是标签的反义，很容易看反。
@@ -131,10 +144,16 @@ async function doExport(): Promise<void> {
   }
 }
 
+/** 「导入配置」按钮：转去点那个藏起来的 file input，真正的处理在 onPickFile 里 */
+function pickFile(): void {
+  fileRef.value?.click()
+}
+
 function onPickFile(e: Event): void {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
+  const fileName = file.name
   const reader = new FileReader()
   reader.onload = () => {
     // 先清空：否则再选同一个文件不会再触发 change
@@ -146,6 +165,7 @@ function onPickFile(e: Event): void {
         return
       }
       pendingBundle.value = parsed
+      pendingName.value = fileName
       confirmImport.value = true
     } catch {
       toast.error('文件不是有效的 JSON，无法导入')
@@ -165,8 +185,8 @@ async function doImport(): Promise<void> {
     toast.error(e instanceof Error ? e.message : '导入失败')
   } finally {
     importing.value = false
+    // 关掉确认框；待导入内容与文件名由上面的 watch 一并清掉
     confirmImport.value = false
-    pendingBundle.value = null
   }
 }
 </script>
@@ -366,20 +386,50 @@ async function doImport(): Promise<void> {
           <strong>归档目录记录</strong>。换机器或重装后在另一台导入，不用重新配一遍。
           任务历史不在里面 —— 那是运行数据，要一起搬得打包整个数据卷。
         </div>
-        <div class="field">
-          <label class="field-label">导出</label>
+        <div class="backup-actions">
           <button class="btn" :disabled="exporting" @click="doExport">
-            <span v-if="exporting" class="spinner" /> 导出配置
+            <span v-if="exporting" class="spinner" />
+            <svg v-else class="backup-ico" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M8 2.5v8M4.8 7.3 8 10.5l3.2-3.2M3 13.2h10"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            导出配置
           </button>
+
+          <button class="btn" :disabled="importing" @click="pickFile">
+            <svg class="backup-ico" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M8 10.5v-8M4.8 5.7 8 2.5l3.2 3.2M3 13.2h10"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            导入配置
+          </button>
+
+          <!-- 原生 file input 的外观跟这套按钮凑不到一起，藏起来由上面的按钮点开 -->
+          <input
+            ref="fileRef"
+            class="backup-file"
+            type="file"
+            accept="application/json,.json"
+            @change="onPickFile"
+          />
         </div>
-        <div class="field">
-          <label class="field-label">导入</label>
-          <input type="file" accept="application/json,.json" class="input" @change="onPickFile" />
-          <div class="field-hint">
-            导入会<strong>整体替换当前设置</strong>；监控目录按<strong>路径</strong>合并
-            （已存在的更新成导入内容，没有的新增）；归档目录记录只增不减。
-            路径不在容器已挂载目录内的监控目录会被跳过。<strong>视频文件本身不受影响。</strong>
-          </div>
+
+        <div class="field-hint backup-note">
+          导入会<strong>整体替换当前设置</strong>；监控目录按<strong>路径</strong>合并
+          （已存在的更新成导入内容，没有的新增）；归档目录记录只增不减。
+          路径不在容器已挂载目录内的监控目录会被跳过。<strong>视频文件本身不受影响。</strong>
         </div>
       </div>
     </template>
@@ -398,7 +448,8 @@ async function doImport(): Promise<void> {
 
     <!-- 导入配置二次确认：会替换设置，必须先说清楚再动手 -->
     <Modal v-model="confirmImport" title="确认导入配置">
-      <p>将用文件里的配置覆盖当前设置。</p>
+      <p>将用这个文件里的配置覆盖当前设置：</p>
+      <p v-if="pendingName"><code class="import-file">{{ pendingName }}</code></p>
       <p><strong>设置</strong>整体替换（切分、监控、服务参数）；<strong>监控目录</strong>按路径合并 ——
         已存在的更新成导入内容，没有的新增；<strong>归档目录记录</strong>只增不减。</p>
       <p>视频文件本身不受影响。</p>
@@ -411,3 +462,56 @@ async function doImport(): Promise<void> {
     </Modal>
   </div>
 </template>
+
+<style scoped>
+/* 备份恢复的两个操作并排成一组：各自占一行时左边空一大截，谁跟谁是一对也看不出来。
+   高度仍用 .btn 的 36px，跟页面上其它按钮齐平。 */
+.backup-actions {
+  position: relative; /* 藏起来的 file input 相对这里定位 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.backup-actions .btn {
+  min-width: 132px;
+  /* 比纯白描边多一点按钮感，hover 时整块转成主色浅底 */
+  background: var(--color-surface-2);
+}
+.backup-actions .btn:hover:not(:disabled) {
+  background: var(--color-primary-soft);
+}
+/* 图标用 currentColor，跟着按钮文字一起变色 */
+.backup-ico {
+  flex-shrink: 0;
+}
+/* 原生 file input 长什么样由浏览器决定，跟这套按钮凑不到一起 ——
+   藏起来（仍能被 JS 触发、也仍能被读屏读到），改由「导入配置」按钮点开 */
+.backup-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+}
+/* 逐条说明摆在按钮组下面，紧跟着它解释的对象 */
+.backup-note {
+  margin-top: var(--space-3);
+}
+/* 确认框里的文件名：长名字要能换行，别把对话框撑破 */
+.import-file {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-muted-soft);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  word-break: break-all;
+}
+</style>
