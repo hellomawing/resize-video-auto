@@ -1,20 +1,14 @@
 #!/bin/bash
 # cmd/install_init —— 安装前检查
 #
-# 两个前置条件，都提前拦下来：比装到最后一步才失败、用户一脸问号要好得多。
-#   1. 目标机器上 Docker 可用（这个应用本体跑在容器里）
-#   2. 打包时把镜像地址改掉了——忘了改的话，装完会卡在拉不到镜像，
-#      而那时报错是 docker 的英文原文，用户很难自己定位到原因
-
-if ! command -v docker >/dev/null 2>&1; then
-    echo "未检测到 Docker 环境。请先在「应用中心 → Docker」里启用容器功能，再安装本应用。" > "${TRIM_TEMP_LOGFILE}"
-    exit 1
-fi
-
-if ! docker info >/dev/null 2>&1; then
-    echo "Docker 服务未启动或当前用户没有访问权限。请确认 Docker 已正常运行后重试。" > "${TRIM_TEMP_LOGFILE}"
-    exit 1
-fi
+# 只做安装包自身的静态校验（镜像占位符）。
+#
+# 注意：这里【不要】用 docker info 预检 Docker！在飞牛上，容器编排文件的
+# 实际的创建/启动由应用中心（以 root 跑自己的 docker daemon）负责，install_init
+# 只是安装前的一个 hook。若在这一步检查 docker，反而会在应用中心的执行上下文里
+# 误报「Docker 服务未启动或当前用户没有访问权限」——即使 Docker 明明正常运行。
+# （参考：飞牛应用商店里的 Docker 应用 install_init 普遍只 exit 0。) 因此这里
+# 只保留与 Docker 无关的镜像占位符校验。
 
 COMPOSE_FILE="${TRIM_APPDEST}/docker/docker-compose.yaml"
 if [ -f "$COMPOSE_FILE" ] && grep -q 'image:[[:space:]]*yourname/' "$COMPOSE_FILE"; then
