@@ -708,7 +708,7 @@ async function doImport(): Promise<void> {
               :disabled="!tabDirty('split') || savingTab === 'split'"
               @click="commitTab('split')"
             >
-              <span v-if="savingTab === 'split'" class="spinner" /> 保存输入框内容
+              <span v-if="savingTab === 'split'" class="spinner" /> 保存设置
             </button>
           </div>
         </div>
@@ -788,7 +788,7 @@ async function doImport(): Promise<void> {
               :disabled="!tabDirty('watch') || savingTab === 'watch'"
               @click="commitTab('watch')"
             >
-              <span v-if="savingTab === 'watch'" class="spinner" /> 保存输入框内容
+              <span v-if="savingTab === 'watch'" class="spinner" /> 保存设置
             </button>
           </div>
         </div>
@@ -874,7 +874,7 @@ async function doImport(): Promise<void> {
               :disabled="!tabDirty('server') || savingTab === 'server'"
               @click="commitTab('server')"
             >
-              <span v-if="savingTab === 'server'" class="spinner" /> 保存输入框内容
+              <span v-if="savingTab === 'server'" class="spinner" /> 保存设置
             </button>
           </div>
         </div>
