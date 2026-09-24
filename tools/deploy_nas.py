@@ -34,10 +34,13 @@ ffmpeg 的依赖链上），只改应用层代码时 apt / pip / 前端依赖全
     --force         不管有没有任务在跑，直接重建
     --dry-run       只打包并打印将要执行的远端命令，不做任何改动
 
-两个必须知道的点：
-  - **deploy/ 目录不在源码包里**，所以 NAS 上 `src/deploy/.env`（PUID/PGID/
-    镜像地址）不会被覆盖，也不该被删掉——里面的 PGID 常和 PUID 不一样
-    （实测这台飞牛是 1000:1001）。
+必知点：
+  - **deploy/ 目录不在源码包里**（打包时排除），所以不会随源码解包被删。
+  - **部署时会把本地 `deploy/docker-compose.yml` 和 `.env.example` 同步到
+    NAS 的 `src/deploy/`**（见 sync_deploy_compose），本地 compose 是挂载配置
+    的唯一来源；但 **`.env` 绝不覆盖**——里面的 PUID/PGID/镜像地址是每台机器
+    各自的真实值，保留 NAS 本地的（PGID 常和 PUID 不一样，实测这台飞牛是
+    1000:1001）。
   - 源码里若新增了顶层目录，记得同时加到下面的 SOURCE_ITEMS，否则传不上去。
 """
 
@@ -182,6 +185,29 @@ def recreate(cli, remote: str, app: str) -> bool:
     return True
 
 
+def sync_deploy_compose(cli, remote: str) -> bool:
+    """把本地 deploy/docker-compose.yml（和 .env.example）推到 NAS 的
+    src/deploy/，使本地文件成为挂载配置的唯一来源。
+
+    只推这两个模板文件，**绝不碰 .env**（里面是 PUID/PGID/镜像地址等每台
+    机器各自的真实值，部署时应该保留 NAS 本地的，不能覆盖）。
+    """
+    local = ROOT / "deploy"
+    remote_dir = "%s/src/deploy" % remote
+    sftp = cli.open_sftp()
+    try:
+        for name in ("docker-compose.yml", ".env.example"):
+            p = local / name
+            if not p.is_file():
+                log("  [警告] 本地没有 %s，跳过同步" % p)
+                continue
+            sftp.put(str(p), "%s/%s" % (remote_dir, name))
+            log("  已同步 %s → %s/%s" % (name, remote_dir, name))
+    finally:
+        sftp.close()
+    return True
+
+
 def wait_healthy(cli, app: str, port: int, timeout: int = 120):
     """等容器 healthy + 接口能应答。entrypoint 要跑挂载自检 + gosu 降权，
     起来后 10~15 秒才算稳。"""
@@ -239,6 +265,7 @@ def main() -> int:
         log("  cd %s && rm -rf %s && tar -xzf src.tar.gz -C src"
             % (remote, " ".join("src/" + i for i in SOURCE_ITEMS)))
         log("  cd %s/src && docker build -f docker/Dockerfile -t %s ." % (remote, tag))
+        log("  put deploy/docker-compose.yml deploy/.env.example -> %s/src/deploy/" % remote)
         log("  cd %s/src/deploy && docker compose -p %s up -d --force-recreate"
             % (remote, app))
         log("\n[dry-run] 没有连接 NAS，什么都没改。")
@@ -270,6 +297,10 @@ def main() -> int:
             log("  [失败] 解包出错：%s%s" % (out, err))
             return 1
         log("  已解包（旧源码已清掉，deploy/ 未动）")
+
+        # 把本地 deploy/docker-compose.yml 同步过去，让本地文件作为挂载配置的
+        # 唯一来源（.env 不碰，见函数文档）。这样每次部署都会用本地这份 compose。
+        sync_deploy_compose(cli, remote)
 
         if not args.skip_build:
             log("\n[3/6] 检查有没有正在跑的任务")
