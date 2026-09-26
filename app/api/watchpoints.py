@@ -12,11 +12,13 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from .. import config, db
-from ..models import (FilterPreviewIn, FilterPreviewOut, ScanIn, ScanResult,
+from ..models import (FilterListPreviewIn, FilterListPreviewOut,
+                      FilterPreviewIn, FilterPreviewOut, ScanIn, ScanResult,
                       WatchPoint, WatchPointCreate, WatchPointUpdate)
 from ..services import filters as filter_rules
 from ..services import scanner, scheduler
 from ..services.monitor import monitor as monitor_service
+from core import splitter as engine
 from .system import ensure_allowed
 
 router = APIRouter(prefix="/watchpoints", tags=["watchpoints"])
@@ -85,6 +87,30 @@ def preview_filters(payload: FilterPreviewIn) -> FilterPreviewOut:
         return FilterPreviewOut(ok=False, message=str(exc))
     return FilterPreviewOut(
         **filter_rules.preview(normalized, payload.path, payload.base_path))
+
+
+@router.post("/filter-list-preview", response_model=FilterListPreviewOut)
+def preview_filter_list(payload: FilterListPreviewIn) -> FilterListPreviewOut:
+    """
+    对监控目录下**已存在文件**做命中预览 —— 编辑页「命中预览」的列表版。
+
+    只读：不写配置、不入队、不碰扫描队列。列出的候选视频口径与扫描一致
+    （引擎能处理的扩展名，由系统设置决定），逐文件走与真实扫描同一份规则
+    判定（services.filters.explain），所以「预览说会处理就真的会处理」。
+    递归与否由前端按监控目录的递归开关传入。
+    """
+    raw = payload.filters.model_dump(by_alias=True) if payload.filters else {}
+    try:
+        normalized = config.normalize_filters(raw, strict=True)
+    except ValueError as exc:
+        # 正则编译不过：预览照样 200，由 message 说明是哪一条
+        return FilterListPreviewOut(ok=False, message=str(exc))
+
+    settings = config.load_settings()
+    exts = set(engine.normalize_exts(settings["split"].get("ext")))
+    return FilterListPreviewOut(
+        **filter_rules.preview_list(normalized, payload.path,
+                                    payload.recursive, exts))
 
 
 @router.post("", response_model=WatchPoint)

@@ -6,8 +6,10 @@ services:
     container_name: video-splitter
     restart: unless-stopped
     ports:
-      # 与 manifest 里的 service_port 保持一致，不要随便改：应用中心的桌面入口按它跳转
-      - "8099:8099"
+      # 容器内部固定 8099（与 manifest 的 service_port 一致，应用中心的桌面入口按它跳转）；
+      # 宿主机侧映射端口由安装向导 wizard_port 决定（写进 .env 的 VS_EXPOSE_PORT），
+      # 默认 8099。这里只写变量，具体值由 cmd/install_callback 在安装时落盘。
+      - "${VS_EXPOSE_PORT:-8099}:8099"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       # 容器内进程的属主，由安装向导收集后写进 .env。

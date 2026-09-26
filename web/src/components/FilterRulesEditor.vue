@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { previewWatchFilters } from '../api/watchpoints'
-import type { FilterMode, FilterRule, WatchFilterPreview, WatchFilters } from '../api/types'
+import { previewWatchFilterList } from '../api/watchpoints'
+import type {
+  FilterMode,
+  FilterRule,
+  WatchFilterListPreview,
+  WatchFilters,
+} from '../api/types'
 
 // 监控目录的「只看这些 / 不看这些」编辑器。
 //
@@ -16,8 +21,10 @@ const props = defineProps<{
   modelValue: WatchFilters
   /** 系统设置里已启用的格式（「设置 → 处理的扩展名」） */
   availableExts: string[]
-  /** 当前选的监控目录。只用于把「整条粘进来的绝对路径」相对化 */
+  /** 当前选的监控目录。同时用于命中预览里「列出目录下已有文件」 */
   basePath?: string
+  /** 监控目录的递归开关 —— 命中预览按它决定列本级还是连子目录一起列 */
+  recursive?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -97,27 +104,30 @@ defineExpose({ invalidRule })
 //
 // 规则是纯文本匹配，光看写法很难确定它到底会挡住什么 —— 尤其是两条规则
 // 叠在一起、或者拿正则去写「含 A 且不含 B」的时候（跨不了路径段，见下面的
-// 说明）。与其让用户配完保存、再去扫描结果的「跳过明细」里反查，不如在边上
-// 放个输入框，敲一条样例路径就知道结果。
+// 说明）。与其让用户配完保存、再去扫描结果的「跳过明细」里反查，不如直接在
+// 边上列出**当前监控目录下已经存在的候选视频**，逐个标出会被处理还是一套
+// 规则挡下：一眼就能看到规则把哪些留了下来、把哪些踢了出去。
 //
 // 判定一律问后端（services.filters.explain，和真实扫描同一份逻辑），前端
 // **不自己算**：预览说会被处理、实际扫描却跳过，那比没有预览更糟。
-const samplePath = ref('')
+//
+// 没选监控目录（新增时 path 还没定）就没有可列的文件，规则区照常编辑、
+// 命中预览先显示「选好目录后这里会列出已有文件」的占位。
 const previewing = ref(false)
-const previewResult = ref<WatchFilterPreview | null>(null)
+const previewResult = ref<WatchFilterListPreview | null>(null)
 const previewError = ref('')
 let previewTimer: number | undefined
 // 只认最新一次请求的结果。网络有快有慢，先发的可能后回 —— 不挡的话，
-// 界面上就会停着一个「上一次输入」的结论，那比空着更误导人
+// 界面上就会停着一个「上一次」的列表，那比空着更误导人
 let previewSeq = 0
 
 async function runPreview(): Promise<void> {
   const seq = ++previewSeq
   previewing.value = true
   try {
-    const result = await previewWatchFilters({
-      path: samplePath.value.trim(),
-      basePath: props.basePath || undefined,
+    const result = await previewWatchFilterList({
+      path: props.basePath?.trim() || '',
+      recursive: props.recursive ?? true,
       filters: props.modelValue,
     })
     if (seq !== previewSeq) return
@@ -133,49 +143,34 @@ async function runPreview(): Promise<void> {
 }
 
 /**
- * 规则或样例一变就重算，防抖 300ms。
+ * 选了目录或规则一变就重算，防抖 400ms。
  *
- * 输入过程中的半截路径不值得每敲一个键就往返一次；但**不跳过**正则写错的
- * 情况 —— 前端用的是浏览器正则、后端是 Python 正则，两者语法并不完全一样
- * （比如 `(?P<name>…)` 后端认、浏览器不认）。所以「正则到底行不行」这件事
- * 交给后端下结论，本地那行红字只当提前提示。
+ * 罗列目录文件是走磁盘的，不值得每改一个字符就重跑一遍；但**不跳过**正则
+ * 写错的情况 —— 前端用的是浏览器正则、后端是 Python 正则，两者语法并不完全
+ * 一样（比如 `(?P<name>…)` 后端认、浏览器不认）。所以「正则到底行不行」
+ * 这件事交给后端下结论，本地那行红字只当提前提示。
  */
 function schedulePreview(): void {
   window.clearTimeout(previewTimer)
-  if (!samplePath.value.trim()) {
+  const dir = props.basePath?.trim() || ''
+  if (!dir) {
     previewSeq += 1          // 作废在途请求，别让它回来把空态填上
     previewResult.value = null
     previewError.value = ''
     previewing.value = false
     return
   }
+  previewResult.value = null
   previewing.value = true
-  previewTimer = window.setTimeout(runPreview, 300)
+  previewTimer = window.setTimeout(runPreview, 400)
 }
 
-watch([samplePath, () => props.modelValue], schedulePreview, { deep: true })
+watch([() => props.basePath, () => props.recursive, () => props.modelValue],
+  schedulePreview, { deep: true })
 onUnmounted(() => window.clearTimeout(previewTimer))
 
-/** 一句话结论（跟徽章配套显示） */
-const previewText = computed(() => {
-  const r = previewResult.value
-  if (!r) return ''
-  if (!r.ok) return r.message
-  if (r.skipped) return r.reason
-  return r.hasRules ? '通过全部规则' : '当前没有配置规则，什么样的文件都不会被挡'
-})
-
-const badgeText = computed(() => {
-  const r = previewResult.value
-  if (!r || !r.ok) return '规则有问题'
-  return r.skipped ? '会被跳过' : '会被处理'
-})
-
-const badgeClass = computed(() => {
-  const r = previewResult.value
-  if (!r || !r.ok) return 'pv-badge--bad'
-  return r.skipped ? 'pv-badge--out' : 'pv-badge--in'
-})
+const hitFiles = computed(() =>
+  previewResult.value?.files.filter((f) => !f.skipped) ?? [])
 
 const PLACEHOLDER: Record<FilterMode, string> = {
   contains: '如：相机',
@@ -295,31 +290,64 @@ const PLACEHOLDER: Record<FilterMode, string> = {
     <!-- ③ 命中预览 -->
     <div class="rules-block">
       <div class="rules-title">命中预览</div>
-      <input
-        v-model="samplePath"
-        class="input"
-        placeholder="敲一个文件名或相对路径试试，如：相机导入/2026/DJI_0002.mp4"
-      />
-      <div v-if="samplePath.trim()" class="pv">
-        <div v-if="previewing" class="pv-line faint">正在算…</div>
-        <template v-else-if="previewResult">
-          <div class="pv-line">
-            <span class="pv-badge" :class="badgeClass">{{ badgeText }}</span>
-            <span class="pv-why">{{ previewText }}</span>
-          </div>
-          <div class="pv-parts">
-            参与比对：
-            <span v-for="(p, i) in previewResult.parts" :key="i" class="pv-part">{{ p }}</span>
-            <span v-if="previewResult.suffix" class="pv-part pv-part--ext">
-              扩展名 {{ previewResult.suffix }}
-            </span>
+      <template v-if="basePath">
+        <div v-if="previewing" class="pv">
+          <div class="pv-line faint">正在列出 <span class="pv-dir">{{ basePath }}</span> 下的候选视频…</div>
+        </div>
+        <template v-else-if="previewError || (previewResult && !previewResult.ok)">
+          <div class="pv">
+            <div class="pv-line pv-line--bad">{{ previewError || previewResult?.message }}</div>
           </div>
         </template>
-        <div v-else-if="previewError" class="pv-line pv-line--bad">{{ previewError }}</div>
-      </div>
-      <div class="rules-hint">
-        只是照着上面的规则算一遍，不扫描、也不需要这个文件真实存在。
-        路径按「监控目录之下」算，与真实扫描用的是同一套判断。
+        <template v-else-if="previewResult">
+          <div class="pv-cols">
+            <!-- 左：原始视频文件列表 -->
+            <div class="pv-col">
+              <div class="pv-col-title">
+                原始视频文件
+                <span class="pv-count" :class="{ 'pv-count--muted': !previewResult.total }">
+                  {{ previewResult.total }}
+                </span>
+              </div>
+              <ul v-if="previewResult.files.length" class="pv-list">
+                <li
+                  v-for="f in previewResult.files"
+                  :key="'a' + f.path"
+                  class="pv-item"
+                  :class="f.skipped ? 'pv-item--out' : 'pv-item--in'"
+                >
+                  {{ f.path }}
+                </li>
+              </ul>
+              <div v-else class="pv-empty-line">目录下没有候选视频</div>
+            </div>
+
+            <!-- 右：命中的视频文件列表 -->
+            <div class="pv-col">
+              <div class="pv-col-title">
+                命中视频文件
+                <span class="pv-count pv-count--hit">{{ hitFiles.length }}</span>
+              </div>
+              <ul v-if="hitFiles.length" class="pv-list">
+                <li
+                  v-for="f in hitFiles"
+                  :key="'h' + f.path"
+                  class="pv-item pv-item--in"
+                >
+                  {{ f.path }}
+                </li>
+              </ul>
+              <div v-else class="pv-empty-line">没有命中的文件</div>
+            </div>
+          </div>
+        </template>
+        <div class="rules-hint">
+          对照的是 <strong>{{ basePath }}</strong> 下{{ recursive ? '（含子目录）' : '' }}现有候选视频，
+          与真实扫描用的是同一套判断；只读，不会改动任何文件。
+        </div>
+      </template>
+      <div v-else class="pv pv-empty">
+        选好监控目录后，这里会列出该目录下已有的候选视频，并标出会被当前规则处理哪些、挡下哪些。
       </div>
     </div>
   </div>
@@ -466,7 +494,7 @@ const PLACEHOLDER: Record<FilterMode, string> = {
   color: var(--color-danger);
   overflow-wrap: anywhere;
 }
-/* 命中预览：结论贴在输入框下面，和规则区同处一屏 */
+/* 命中预览：列出当前监控目录下已有文件的结论 */
 .pv {
   display: flex;
   flex-direction: column;
@@ -476,6 +504,10 @@ const PLACEHOLDER: Record<FilterMode, string> = {
   border-radius: var(--radius-sm);
   background: var(--color-surface-2);
 }
+.pv-empty {
+  color: var(--color-text-faint);
+  font-size: var(--font-size-xs);
+}
 .pv-line {
   display: flex;
   align-items: center;
@@ -484,8 +516,8 @@ const PLACEHOLDER: Record<FilterMode, string> = {
   min-width: 0;
   font-size: var(--font-size-sm);
 }
-.pv-why {
-  min-width: 0;
+.pv-dir {
+  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 .pv-line--bad {
@@ -493,41 +525,77 @@ const PLACEHOLDER: Record<FilterMode, string> = {
   color: var(--color-danger);
   overflow-wrap: anywhere;
 }
-.pv-badge {
-  flex-shrink: 0;
-  padding: 1px var(--space-2);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-xs);
-  white-space: nowrap;
+/* 左右分栏：左=原始视频列表，右=命中视频列表 */
+.pv-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  min-width: 0;
 }
-.pv-badge--in {
+@media (max-width: 720px) {
+  .pv-cols {
+    grid-template-columns: 1fr;
+  }
+}
+.pv-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+.pv-col-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-soft);
+}
+.pv-count {
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+.pv-count--hit {
   background: var(--color-primary-soft);
   color: var(--color-primary-dark);
 }
-.pv-badge--out,
-.pv-badge--bad {
-  background: var(--color-danger-soft);
-  color: var(--color-danger);
-}
-/* 照实摆出「到底在跟什么比」——正则跨不了路径段这类困惑，看一眼这行就明白 */
-.pv-parts {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  font-size: var(--font-size-xs);
+.pv-count--muted {
   color: var(--color-text-faint);
 }
-.pv-part {
+.pv-empty-line {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+  padding: var(--space-2);
+}
+.pv-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.pv-item {
   font-family: var(--font-mono);
-  padding: 0 5px;
-  border: 1px solid var(--color-border);
+  font-size: var(--font-size-xs);
+  padding: 3px 6px;
   border-radius: var(--radius-sm);
-  background: var(--color-surface);
   overflow-wrap: anywhere;
 }
-.pv-part--ext {
-  border-style: dashed;
-  color: var(--color-text-soft);
+.pv-item--in {
+  background: var(--color-primary-soft);
+  color: var(--color-primary-dark);
+}
+.pv-item--out {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
 }
 </style>

@@ -2,6 +2,7 @@ import { request } from './client'
 import type {
   ScanOptions,
   ScanResult,
+  WatchFilterListPreview,
   WatchFilterPreview,
   WatchFilters,
   WatchPoint,
@@ -54,3 +55,16 @@ export const previewWatchFilters = (body: {
   filters: WatchFilters
 }): Promise<WatchFilterPreview> =>
   request<WatchFilterPreview>('/watchpoints/filter-preview', { method: 'POST', body })
+
+/**
+ * 对监控目录下已存在文件做命中预览——编辑页「命中预览」的列表版。
+ *
+ * 列出目录里已有的候选视频，逐个标出会被处理还是被规则挡下。
+ * path 是要列文件的目录（当前选的监控目录），递归与否由前端按监控目录传。
+ */
+export const previewWatchFilterList = (body: {
+  path: string
+  recursive: boolean
+  filters: WatchFilters
+}): Promise<WatchFilterListPreview> =>
+  request<WatchFilterListPreview>('/watchpoints/filter-list-preview', { method: 'POST', body })

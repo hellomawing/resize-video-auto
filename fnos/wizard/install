@@ -4,19 +4,56 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "安装完成后，在飞牛桌面点「视频分割」图标即可打开网页控制台，添加要监控的文件夹、选择扫描方式、调整分割参数。<br><br>默认会自动挂载机器上所有的存储空间（/vol1、/vol2 …），一般不需要改下面第一项。"
+                "helpText": "安装完成后，在飞牛桌面点「视频分割」图标即可打开网页控制台，添加要监控的文件夹、选择扫描方式、调整分割参数。<br><br>下面按需填写即可：<b>扫描文件夹 / 数据目录 / 端口</b>都可以留空使用默认值。"
             },
             {
                 "type": "text",
-                "field": "wizard_mount_paths",
-                "label": "额外挂载的路径（可选）",
+                "field": "wizard_data_dir",
+                "label": "数据目录（可选）",
                 "initValue": "",
                 "rules": [
                     {
                         "pattern": "^$|^/.*$",
-                        "message": "请填写绝对路径，例如 /mnt/usb；多个路径用英文逗号分隔"
+                        "message": "请填写绝对路径，例如 /vol1/@appdata/video-splitter；留空则用默认位置"
                     }
                 ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_scan_paths",
+                "label": "要扫描的文件夹（可选）",
+                "initValue": "",
+                "rules": [
+                    {
+                        "pattern": "^$|^(/.*)(,/.*)*$",
+                        "message": "请填写绝对路径，例如 /vol1/1000/video-split-in；多个路径用英文逗号分隔；留空则装好后在网页里添加"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "wizard_port",
+                "label": "对外服务端口（可选）",
+                "initValue": "8099",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写端口号"
+                    },
+                    {
+                        "pattern": "^[0-9]+$",
+                        "message": "只能填数字，例如 8099"
+                    },
+                    {
+                        "min": 1,
+                        "max": 5,
+                        "message": "端口号应为 1~65535"
+                    }
+                ]
+            },
+            {
+                "type": "tips",
+                "helpText": "「数据目录」存放配置、监控目录列表与任务历史，默认装在应用所在存储空间的 <b>/volN/@appdata/video-splitter</b>。<br>「要扫描的文件夹」是你想让它自动切分视频的目录 —— 如果它不在机器默认挂载的存储空间里，这里填上后会自动挂载进应用容器。<br>「对外服务端口」是应用在宿主机上的访问端口（容器内部固定 8099），如需换一个不冲突的端口再改。"
             },
             {
                 "type": "tips",
@@ -56,23 +93,28 @@
             },
             {
                 "type": "text",
-                "field": "wizard_timezone",
-                "label": "时区",
-                "initValue": "Asia/Shanghai",
+                "field": "wizard_mount_paths",
+                "label": "额外挂载的路径（可选）",
+                "initValue": "",
                 "rules": [
                     {
-                        "required": true,
-                        "message": "请填写时区名，例如 Asia/Shanghai"
+                        "pattern": "^$|^/.*$",
+                        "message": "请填写绝对路径，例如 /mnt/usb；多个路径用英文逗号分隔"
                     }
                 ]
             },
             {
                 "type": "tips",
-                "helpText": "配置、监控目录列表与任务历史存在应用自己的数据目录里（安装所在存储空间的 <b>/volN/@appdata/video-splitter</b>），备份就是把这个目录整个拷走；<b>卸载时不勾选「删除数据」就会保留</b>，重装后能接着用。想确认它在哪，装好后看网页「设置 → 服务参数 → 数据目录」。"
-            },
+                "helpText": "时区默认取自系统设置，装好后也可在网页控制台里自行调整，安装时无需填写。<br><br>备份就是把「数据目录」整个拷走；<b>卸载时不勾选「删除数据」就会保留</b>，重装后能接着用。"
+            }
+        ]
+    },
+    {
+        "stepTitle": "确认需要挂载的存储空间",
+        "items": [
             {
                 "type": "tips",
-                "helpText": "时区会影响定时扫描的触发时刻：填 Asia/Shanghai 时，「每天凌晨 3 点」指的就是北京时间凌晨 3 点。"
+                "helpText": "安装会自动挂载机器上所有的存储空间（/vol1、/vol2 …），因此上面填的路径只要位于任一存储空间内就能被应用访问。<br><br>如果扫描文件夹位于外接存储或未自动挂载的位置，请把它的路径也填进「额外挂载的路径」。"
             }
         ]
     }

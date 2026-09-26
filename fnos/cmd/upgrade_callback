@@ -20,6 +20,9 @@ if [ -f "$INSTALL_CALLBACK" ]; then
         export wizard_puid="$(grep -E '^PUID=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
         export wizard_pgid="$(grep -E '^PGID=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
         export wizard_timezone="$(grep -E '^TZ=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
+        export wizard_data_dir="$(grep -E '^VS_DATA=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
+        export wizard_port="$(grep -E '^VS_EXPOSE_PORT=' "$ENV_FILE" | tail -n 1 | cut -d= -f2)"
+        export wizard_scan_paths="" # 扫描文件夹升级时保持已写入 web 的监控列表不变，这里不重传
     fi
     ( source "$INSTALL_CALLBACK" ) || true
 fi

@@ -205,6 +205,28 @@ export interface WatchFilterPreview {
   reason: string
 }
 
+/** 命中预览里的一行：某个监控目录下已存在的文件会怎么被这套规则对待 */
+export interface WatchFilterListFile {
+  /** 相对监控目录的路径（本级文件名，或含子目录的相对路径） */
+  path: string
+  /** false = 会被处理（命中）；true = 被这套规则挡下 */
+  skipped: boolean
+  /** skipped 为真时被挡下原因，与扫描「跳过明细」文案同源 */
+  skippedReason: string
+}
+
+/** 对监控目录下已存在文件做命中预览的结果（列表版） */
+export interface WatchFilterListPreview {
+  ok: boolean
+  message: string
+  hasRules: boolean
+  /** 目录里找到的候选视频总数（含被挡下的） */
+  total: number
+  /** 其中会被处理的个数 */
+  hit: number
+  files: WatchFilterListFile[]
+}
+
 export interface WatchPoint {
   id: string
   path: string

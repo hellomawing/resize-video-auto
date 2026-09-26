@@ -1,12 +1,12 @@
 #!/bin/bash
 # cmd/install_callback —— 安装完成后的初始化
 #
-# 做三件事：
+# 做这几件事：
 #   1. 按机器上真实存在的存储空间（/vol1、/vol2 …）重写 compose 的挂载列表。
 #      不能写死：每台 NAS 的存储空间数量不一样，而挂载一个不存在的路径
 #      会让 Docker 凭空建出一个空目录，把存储空间列表搞乱。
-#   2. 生成 .env：数据目录、运行用户、时区。
-#   3. 首次安装时预置可访问根目录，让用户装完直接就能在网页里选文件夹。
+#   2. 应用向导里收集的值：数据目录、扫描文件夹、对外端口、运行用户、时区。
+#   3. 首次安装时预置可访问根目录（扫描文件夹），让用户装完直接就能用。
 #
 # 这个脚本会被重复执行（应用中心支持重装/修复），所以每一步都必须可重入。
 
@@ -15,7 +15,6 @@ set -u
 COMPOSE_DIR="${TRIM_APPDEST}/docker"
 COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yaml"
 ENV_FILE="${COMPOSE_DIR}/.env"
-DATA_DIR="${TRIM_PKGVAR:-/vol1/@appdata/video-splitter}"
 
 fail() {
     echo "$1" > "${TRIM_TEMP_LOGFILE}"
@@ -26,12 +25,30 @@ fail() {
 [ -d "$COMPOSE_DIR" ] || fail "编排目录 ${COMPOSE_DIR} 不存在，应用无法启动，请重新安装。"
 
 # ---------------------------------------------------------------- 数据目录
+# 向导填了就尊重用户的选择，否则落到应用的 var 目录（安装所在存储空间）。
+DATA_DIR="${wizard_data_dir:-}"
+if [ -z "$DATA_DIR" ]; then
+    DATA_DIR="${TRIM_PKGVAR:-/vol1/@appdata/video-splitter}"
+fi
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 
 # ---------------------------------------------------------------- 挂载列表
 # 用临时文件收集，避免用管道 while 时子 shell 里的变量丢失
 TMP_VOL="$(mktemp)"
 trap 'rm -f "$TMP_VOL"' EXIT
+
+# 把「绝对路径 → compose 挂载行」写进临时文件，已存在的不重复
+add_volume() {
+    local p="$1"
+    [ -n "$p" ] || return 0
+    [ -d "$p" ] || return 0
+    # 数据目录本身已由 ${VS_DATA}:/data 挂载，不要重复挂（会与 /data 冲突）
+    if [ "$p" = "$DATA_DIR" ]; then
+        return 0
+    fi
+    grep -qxF "      - ${p}:${p}" "$TMP_VOL" && return 0
+    printf '      - %s:%s\n' "$p" "$p" >> "$TMP_VOL"
+}
 
 # 只挂真正的存储空间，通配必须能排掉系统/内部目录：
 #   飞牛的存储空间命名为 /vol1、/vol2 …（不带前导零）；
@@ -42,8 +59,26 @@ trap 'rm -f "$TMP_VOL"' EXIT
 #   所以这里用 /vol[1-9]* —— 首字符要求为非零数字，天然跳过前导零的
 #   系统目录，只保留 vol1、vol2、vol10 … 这样的真实存储空间。
 for p in $(ls -d /vol[1-9]* 2>/dev/null | sort); do
-    [ -d "$p" ] && printf '      - %s:%s\n' "$p" "$p" >> "$TMP_VOL"
+    [ -d "$p" ] && add_volume "$p"
 done
+
+# 数据目录已由 compose 的 ${VS_DATA}:/data 挂载（.env 里 VS_DATA 指向上述 DATA_DIR），
+# 无需在 volumes 块里再重复挂 /data。这里把它从 dedup 检查里临时排除：
+# add_volume 的 :/data 校验是防止扫描文件夹误挂到 /data，保留那行检查即可。
+# 向导里指定的扫描文件夹（可选）：填了就要确保挂进容器，否则应用访问不到。
+# 可以是任意绝对路径；通常在某个存储空间内，这里补挂一次只是兜底（已存在则跳过）。
+scan_paths="${wizard_scan_paths:-}"
+if [ -n "$scan_paths" ]; then
+    printf '%s' "$scan_paths" | tr ',' '\n' > "${TMP_VOL}.scan"
+    while IFS= read -r sp; do
+        sp=$(printf '%s' "$sp" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        case "$sp" in
+            /*) add_volume "$sp" ;;
+            *) continue ;;
+        esac
+    done < "${TMP_VOL}.scan"
+    rm -f "${TMP_VOL}.scan"
+fi
 
 # 用户在向导里额外指定的路径（可选），只接受存在的绝对路径
 if [ -n "${wizard_mount_paths:-}" ]; then
@@ -55,8 +90,7 @@ if [ -n "${wizard_mount_paths:-}" ]; then
             *) continue ;;
         esac
         [ -d "$extra" ] || continue
-        grep -qxF "      - ${extra}:${extra}" "$TMP_VOL" && continue
-        printf '      - %s:%s\n' "$extra" "$extra" >> "$TMP_VOL"
+        add_volume "$extra"
     done < "${TMP_VOL}.extra"
     rm -f "${TMP_VOL}.extra"
 fi
@@ -84,8 +118,46 @@ if [ -s "${COMPOSE_FILE}.new" ] && grep -q '# <<< volumes' "${COMPOSE_FILE}.new"
 else
     # 重写失败不算致命：包里自带的 /vol1 挂载仍然可用
     rm -f "${COMPOSE_FILE}.new"
-    echo "[video-splitter] 未能自动更新挂载列表，沿用默认的 /vol1。" >> "${TRIM_PKGVAR}/install.log" 2>/dev/null || true
+    echo "[video-splitter] 未能自动更新挂载列表，沿用默认的 /vol1。" >> "${DATA_DIR}/install.log" 2>/dev/null || true
 fi
+
+# ---------------------------------------------------------------- 端口
+# 对外服务端口：向导填了就作为宿主机映射端口，容器内部固定 8099。
+# 用一个独立的变量名（VS_EXPOSE_PORT），避免与容器内监听的 VS_PORT 冲突。
+# compose 里的 ports 直接引用 ${VS_EXPOSE_PORT:-8099}，所以这里只需把值写进 .env。
+PORT="${wizard_port:-8099}"
+case "$PORT" in
+    ''|*[!0-9]*) PORT=8099 ;;
+    *) [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || PORT=8099 ;;
+esac
+
+# ---------------------------------------------------------------- 时区
+# 向导不再收集时区：优先读系统时区，读不到就用 Asia/Shanghai 兜底。
+detect_tz() {
+    if [ -e /etc/timezone ]; then
+        cat /etc/timezone
+        return
+    fi
+    for f in /etc/localtime /usr/share/zoneinfo; do
+        if command -v readlink >/dev/null 2>&1 && [ -L /etc/localtime ]; then
+            local link
+            link=$(readlink /etc/localtime)
+            case "$link" in
+                *zoneinfo/*) echo "${link#*zoneinfo/}"; return ;;
+            esac
+        fi
+        break
+    done
+    # 读不出就试 timedatectl（只读命令，安全）
+    if command -v timedatectl >/dev/null 2>&1; then
+        timedatectl show -p Timezone --value 2>/dev/null
+    fi
+}
+TZ_VAL="${wizard_timezone:-}"
+if [ -z "$TZ_VAL" ]; then
+    TZ_VAL="$(detect_tz)"
+fi
+[ -n "$TZ_VAL" ] || TZ_VAL="Asia/Shanghai"
 
 # ---------------------------------------------------------------- .env
 # PGID 的兜底值是 1001：飞牛上 admin 是 uid=1000、gid=1001（Users 组），
@@ -93,10 +165,41 @@ fi
 cat > "$ENV_FILE" <<EOF
 # 由 cmd/install_callback 自动生成，重新安装或升级时会重写。
 VS_DATA=${DATA_DIR}
+VS_EXPOSE_PORT=${PORT}
 PUID=${wizard_puid:-1000}
 PGID=${wizard_pgid:-1001}
-TZ=${wizard_timezone:-Asia/Shanghai}
+TZ=${TZ_VAL}
 EOF
+
+# ---------------------------------------------------------------- 预置扫描文件夹
+# 向导里填的扫描文件夹在装好后立即写入 web 的监控目录列表。
+# 做法：本脚本只负责把「要预置的路径」写进一个专门的种子文件
+# （$DATA_DIR/.vs-seed-watchpoints.json），真正的 watchpoints.json 合并
+# 交给应用启动时做（app/config.py 会在首次读到种子文件时合并进监控目录并删除种子）。
+# 这样把 JSON 生成/合并在应用侧完成，避免在应用中心环境下手工拼 JSON 出错。
+if [ -n "${wizard_scan_paths:-}" ]; then
+    WPDIR="$(dirname "$DATA_DIR/watchpoints.json" 2>/dev/null || echo "$DATA_DIR")"
+    mkdir -p "$WPDIR"
+    seed="$DATA_DIR/.vs-seed-watchpoints.json"
+    rm -f "$seed"
+    {
+        printf '['
+        n=0
+        while IFS= read -r item; do
+            sp=$(printf '%s' "$item" | tr -d ' ')
+            case "$sp" in
+                /*) ;;
+                *) continue ;;
+            esac
+            [ -n "$sp" ] || continue
+            [ -d "$sp" ] || continue
+            [ "$n" = 0 ] || printf ','
+            printf '{"path":"%s","recursive":true,"scanMode":"realtime","scanIntervalHours":6,"scanTime":"03:00","markSource":"","sourceDir":"","note":"安装时指定","filters":{"extInclude":[],"extExclude":[],"nameInclude":[],"nameExclude":[]}}' "$sp"
+            n=$((n+1))
+        done < <(printf '%s' "${wizard_scan_paths}" | tr ',' '\n')
+        printf ']\n'
+    } > "$seed"
+fi
 
 # ---------------------------------------------------------------- 属主自检
 # 存储卷的属组就是新文件会继承的属组。如果和向导里填的 PGID 对不上，
@@ -110,12 +213,8 @@ if [ -n "$VOL_CHECK" ] && [ -d "$VOL_CHECK" ]; then
             echo "[video-splitter] 提示：${VOL_CHECK} 的属组 gid=${VOL_GID}，"
             echo "                 与安装时填写的 GID=${wizard_pgid:-1001} 不一致。"
             echo "                 若切片在文件管理里改不动，请用 id -g 你的用户名 的结果重装。"
-        } >> "${TRIM_PKGVAR}/install.log" 2>/dev/null || true
+        } >> "${DATA_DIR}/install.log" 2>/dev/null || true
     fi
 fi
-
-# 说明：以前这里会按挂载列表预置一份 settings.json 的「可访问根目录白名单」。
-# 那个概念已删除 —— 网页上能浏览/添加的范围现在**只由容器挂载决定**，
-# 所以安装时不需要再写任何设置。
 
 exit 0

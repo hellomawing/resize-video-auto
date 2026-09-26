@@ -32,6 +32,7 @@ app/services/filters.py —— 监控目录自己的「只看这些 / 不看这�
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -207,6 +208,77 @@ def preview(raw, value: str, base: str = None) -> dict:
     reason = explain(compiled, text, parts)
     return {"ok": True, "parts": list(parts), "suffix": suffix,
             "hasRules": True, "skipped": bool(reason), "reason": reason or ""}
+
+
+def _iter_candidate_files(root: Path, recursive: bool, exts: tuple):
+    """递归或非递归地枚举一个目录下的候选视频文件。
+
+    与 system.browse 的「只数视频」同一口径：非视频文件本来就不会被切，
+    列出它们只会让命中预览刷屏。返回相对 root 的 Path 序列；
+    目录读不动或没权限时返回空（由调用方另说原因）。
+    """
+    out = []
+
+    def walk(base: Path, rel: Path):
+        try:
+            iterable = base.iterdir()
+        except OSError:
+            return
+        for child in iterable:
+            try:
+                if child.name.startswith("."):
+                    continue
+                if child.is_dir():
+                    if recursive:
+                        walk(child, rel / child.name)
+                elif not child.is_symlink() and child.suffix.lower() in exts:
+                    out.append(rel / child.name)
+            except OSError:
+                continue
+
+    walk(Path(root), Path())
+    return out
+
+
+def preview_list(raw, folder: str, recursive: bool, exts: tuple) -> dict:
+    """对监控目录下**已存在文件**做命中预览。
+
+    与预览单条样例（preview）共用同一套 explain 判定，保证「预览说会被处理
+    就真的会处理」。区别只在输入来源：这边是磁盘上真实文件，逐行列出来。
+    """
+    folder = str(folder or "").strip()
+    if not folder:
+        return {"ok": True, "total": 0, "hit": 0, "has_rules": False,
+                "files": []}
+
+    root = Path(folder)
+    if not root.is_dir():
+        return {"ok": True, "message": "目录不存在或没有访问权限，无法列出文件",
+                "total": 0, "hit": 0, "has_rules": False, "files": []}
+
+    compiled = compile_filters(raw)
+    has_rules = compiled is not None
+
+    # 无论有没有规则都先枚举出候选视频 —— 「一条规则都没配」是最常见的情况，
+    # 此时要列出全部文件并标成都会被处理，而不是显示成「候选视频 0 个」。
+    files = _iter_candidate_files(root, recursive, exts)
+    rows, hit = [], 0
+    for rel in files:
+        if compiled is not None:
+            reason = explain(compiled, str(root / rel), rel.parts)
+        else:
+            reason = None
+        if reason:
+            rows.append({"path": str(rel).replace(os.sep, "/"),
+                         "skipped": True, "skipped_reason": reason})
+        else:
+            rows.append({"path": str(rel).replace(os.sep, "/"),
+                         "skipped": False, "skipped_reason": ""})
+            hit += 1
+    # 命中在前、被挡在后：最想让用户看到的是「我的规则会切哪些」
+    rows.sort(key=lambda r: (r["skipped"], r["path"]))
+    return {"ok": True, "message": "", "total": len(rows), "hit": hit,
+            "has_rules": has_rules, "files": rows}
 
 
 def build_matchers(raw):

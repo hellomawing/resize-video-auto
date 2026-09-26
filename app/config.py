@@ -20,6 +20,7 @@ import json
 import os
 import re
 import threading
+import uuid
 from copy import deepcopy
 from pathlib import Path
 
@@ -38,6 +39,9 @@ WATCHPOINTS_PATH = DATA_DIR / "watchpoints.json"
 DB_PATH = DATA_DIR / "video-splitter.db"
 # 「用过的归档子目录名」的记录，见 collect_archive_dirs
 ARCHIVE_DIRS_PATH = DATA_DIR / "archive-dirs.json"
+# 安装引导写入的「待预置监控目录」种子文件。首次读到后会被合并进
+# watchpoints.json 并删除（见 load_watchpoints），避免重复写入。
+SEED_WATCHPOINTS_PATH = DATA_DIR / ".vs-seed-watchpoints.json"
 
 # ---------------------------------------------------------------- 原片处理方式
 
@@ -451,8 +455,59 @@ def scan_cron(wp: dict) -> str | None:
     return None
 
 
+def _ingest_seed_watchpoints() -> None:
+    """把安装引导的种子文件合并进 watchpoints.json，合并后删除种子文件。
+
+    种子文件由 fnos/cmd/install_callback 在安装时写入，是应用在容器被创建前
+    无法自行写文件时的传递通道。首次读到即合并，避免下次启动重复写入；
+    种子缺失或损坏时静默忽略（例如用户从未在安装向导里填扫描文件夹）。
+    """
+    seed = SEED_WATCHPOINTS_PATH
+    if not seed.exists():
+        return
+    raw = _read_json(seed, [])
+    try:
+        seed.unlink()
+    except OSError:
+        pass
+    if not isinstance(raw, list):
+        return
+    # 只留下路径落在容器已挂载目录、且当前配置里还没有的条目
+    current = _read_json(WATCHPOINTS_PATH, [])
+    if not isinstance(current, list):
+        current = []
+    exist = {str(w.get("path") or "").rstrip("/") for w in current
+             if isinstance(w, dict) and w.get("path")}
+    added = False
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        if path.rstrip("/") in exist:
+            continue
+        item["id"] = item.get("id") or ("wp_" + uuid.uuid4().hex[:8])
+        item["createdAt"] = item.get("createdAt") or now_iso_shim()
+        current.append(item)
+        exist.add(path.rstrip("/"))
+        added = True
+    if added:
+        try:
+            _atomic_write(WATCHPOINTS_PATH, current)
+        except OSError as exc:
+            _log("写入预置监控目录失败：%s" % exc)
+
+
+def now_iso_shim() -> str:
+    # 延迟导入 db，避免 config ⇄ db 循环依赖
+    from . import db  # noqa: PLC0415
+    return db.now_iso()
+
+
 def load_watchpoints() -> list:
     with _lock:
+        _ingest_seed_watchpoints()
         data = _read_json(WATCHPOINTS_PATH, [])
         if not isinstance(data, list):
             return []

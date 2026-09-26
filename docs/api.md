@@ -445,6 +445,50 @@ body 就是上面那份 JSON，返回导入结果：
 - 它只回答「过滤规则这一关」，不判断文件类型是否在系统设置里、也不看
   最小体积和大小阈值 —— 那些不属于这套规则的职责。
 
+#### 命中预览（列表版）`POST /api/watchpoints/filter-list-preview`
+
+上面那个单条样例不够直观时，这个接口直接把**当前监控目录下已存在的候选
+视频**逐个过一遍规则，标出会被处理还是被挡下 —— 编辑页面上的「命中预览」
+改用了它。**判定仍与真实扫描同源**（同一个 `filters.explain`），不是另写
+一套预览逻辑。
+
+```json
+// 请求
+{
+  "path": "/vol1/media/inbox",
+  "recursive": true,
+  "filters": {
+    "extInclude": [".mp4"],
+    "nameExclude": [ { "mode": "contains", "value": "花絮" } ]
+  }
+}
+```
+
+```json
+// 响应
+{
+  "ok": true,
+  "message": "",
+  "hasRules": true,
+  "total": 5,
+  "hit": 3,
+  "files": [
+    { "path": "DJI_0002.mp4", "skipped": false, "skippedReason": "" },
+    { "path": "相机导入/a.mp4", "skipped": true, "skippedReason": "命中排除规则「花絮」" }
+  ]
+}
+```
+
+- **只读**：不写配置、不入队、不碰扫描队列。`filters` 为空时不列文件。
+- 候选口径与扫描一致：只列「引擎能处理的视频扩展名」（由系统设置决定），
+  非视频文件本就不会被切，列出来只会刷屏。
+- `path` 是要列文件的目录（当前选的监控目录），`recursive` 由前端按监控
+  目录的递归开关传。`path` 空 = 不预览，返回空表；目录不存在/读不动时
+  `ok: true` + `message` 说明，不让预览整页崩掉。
+- 目录里文件很多时不要用这个接口做全量判断 —— 它面向「编辑期快速看结果」。
+- `skipped` 为真时 `skippedReason` 与上面单条版的 `reason`、以及
+  `ScanResult.ignored[].reason` **文案同源**。
+
 ### 扫描方式 `scanMode`
 
 一个字段同时回答「要不要自动扫」「多久扫一次」。**不要**再拆成

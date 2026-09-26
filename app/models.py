@@ -225,7 +225,7 @@ class WatchFilters(CamelModel):
 
 
 class FilterPreviewIn(CamelModel):
-    """试算「这条路径会不会被这套规则挡下」——编辑页的命中预览。
+    """试算「这条路径会不会被这套规则挡下」——编辑页的命中预览（单条样例）。
 
     只做字符串判断，**不要求这个文件真的存在**：用户往往是拿一个脑子里的
     文件名去试规则，而不是先去目录里翻出一个真实文件。所以这里既不校验
@@ -237,6 +237,50 @@ class FilterPreviewIn(CamelModel):
     base_path: str = ""
     # 允许为空 = 「一条规则都没配」，此时结论必然是「会被处理」
     filters: Optional[WatchFilters] = None
+
+
+class FilterListFile(CamelModel):
+    """命中预览里的一行：某个监控目录下已存在的文件会怎么被这套规则对待。
+
+    path 是**相对监控目录**的路径（本级文件名，或含子目录的相对路径）。
+    预览只在目录下找「引擎能处理的视频」——非视频文件本来就不会被切，
+    列出来只会刷屏，与扫描实际看到的候选一致。
+    """
+    path: str
+    # False = 会被处理（命中）；True = 被这套规则挡下，skipped_reason 说明原因
+    skipped: bool = False
+    skipped_reason: str = ""
+
+
+class FilterListPreviewIn(CamelModel):
+    """对监控目录下**已存在文件**做命中预览。
+
+    与 FilterPreviewIn 的区别：那边试算一条手敲的样例路径（不要求存在）；
+    这边列出目录里真实已有的候选视频，逐个告诉用户会被处理还是被规则挡下。
+    范围只限监控目录本身：递归由调用方（前端）按监控目录的递归开关决定。
+    """
+    path: str = ""            # 要列文件的目录；空 = 不预览，直接返回空表
+    recursive: bool = True    # 是否连同子目录一起列
+    # 允许为空 = 「一条规则都没配」，此时结论必然是「会被处理」
+    filters: Optional[WatchFilters] = None
+
+
+class FilterListPreviewOut(CamelModel):
+    """命中预览的列表结果。
+
+    ok=False 表示**规则本身有问题**（正则编译不过）或目录读不动，
+    此时 files 为空、由 message 说明原因 —— 一律 200 返回，理由同上方的
+    FilterPreviewOut（预览是「帮我看看」而不是「保存配置」）。
+    """
+    ok: bool = True
+    message: str = ""
+    has_rules: bool = False
+    # 目录里找到的候选视频总数（含被挡下的）
+    total: int = 0
+    # 其中会被处理的个数
+    hit: int = 0
+    # 逐文件结论，按「命中在前、被挡在后」排序
+    files: list[FilterListFile] = Field(default_factory=list)
 
 
 class FilterPreviewOut(CamelModel):

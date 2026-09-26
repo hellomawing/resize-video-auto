@@ -260,6 +260,7 @@ async function save(): Promise<void> {
           v-model="form.filters"
           :available-exts="availableExts"
           :base-path="form.path"
+          :recursive="form.recursive"
         />
       </div>
 

@@ -20,6 +20,12 @@
 ⚠️ 约束：**任何发布到 Docker Hub 的动作都必须弹出 y/N 确认，绝不自动推。**
    脚本只在你说 y 之后才执行 docker buildx --push。
 
+确认策略（刻意分成两类）：
+    - **部署到局域网飞牛（菜单 1 / 2）：不再二次确认**，菜单选中即执行。
+      目标是内网 NAS、随时可重跑覆盖，再问一次只是白敲一次 y。
+    - **一切对外动作（菜单 3 全流程、推 Docker Hub、推 git tag、建 GitHub
+      Release）保留确认**，这些动作推出去就收不回来。
+
 依赖：
     - 本机 SSH 到 NAS 的凭据 deploy/.nas-credentials（不提交，见 ssh_run.py）
     - fnpack.exe 用于打 fpk；Docker 用于构建镜像
@@ -56,9 +62,12 @@ NAS_INSTALL_ENV = "/tmp/video-splitter-release.env"
 
 # 安装向导字段（appcenter-cli 读取，缺失会报 19000）
 WIZARD_ENV = {
+    "wizard_data_dir": "",
+    "wizard_scan_paths": "",
+    "wizard_port": "8099",
     "wizard_puid": "1000",
     "wizard_pgid": "1001",
-    "wizard_timezone": "Asia/Shanghai",
+    "wizard_timezone": "",  # 已改为读取系统时区
     "wizard_mount_paths": "",
 }
 
@@ -188,9 +197,8 @@ def set_manifest_version(version: str):
 def docker_deploy_to_nas():
     banner("1. Docker 部署到局域网飞牛")
     log("将当前源码打包上传到 NAS，在 NAS 本地构建镜像并重建容器。")
-    log("（不经过 Docker Hub；复用 tools/deploy_nas.py）\n")
-    if not confirm("现在开始 Docker 方式部署？"):
-        return
+    log("（不经过 Docker Hub；复用 tools/deploy_nas.py）")
+    log("内网部署，选中即执行，不再二次确认。\n")
     rc = run_proc([sys.executable, "tools/deploy_nas.py"], ROOT)
     if rc == 0:
         log("\n✔ Docker 部署完成。可在飞牛 Docker → Compose 页签查看。")
@@ -221,10 +229,7 @@ def fpk_deploy_to_nas():
     if not local_fpk:
         return
 
-    if not confirm("上传 fpk 到 NAS 并用 appcenter-cli 安装/升级？",
-                   default=True):
-        return
-
+    log("内网部署，选中即执行，不再二次确认。")
     cli = ssh_run.connect()
     try:
         # 1) 上传 fpk 与安装向导 env

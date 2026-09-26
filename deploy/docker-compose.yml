@@ -32,7 +32,7 @@ services:
       # 备份走「设置 → 导出配置」，或者整卷打包：
       #   docker run --rm -v video-splitter-data:/data -v "$PWD":/backup \
       #     alpine tar czf /backup/vs-data.tgz -C /data .
-      - vsdata:/data
+      # - vsdata:/data
       # 要处理的视频：挂进来的目录就是网页上能浏览、能添加监控的范围
       # （没有额外的白名单要配）。
       #
@@ -40,12 +40,14 @@ services:
       # 里改，`.env` 不会被部署同步覆盖）。下面这一行是生效写法：把宿主机某一
       # 个目录挂成容器内的 /test-video —— 网页上的监控目录就填容器内路径
       # /test-video（挂载进来自动按容器内路径显示）。
-      - "${VS_MEDIA_MOUNT:-/vol1/1000/video-split-in}:/test-video"
+      # - "${VS_MEDIA_MOUNT:-/vol1/1000/video-split-in}:/test-video"
       # 想改成「整盘可见」就把上面换成下面这行（容器内路径 = 宿主机一致）：
       # - /vol1:/vol1
       # 有多个存储空间就继续加，挂上即可，网页上立刻能选到
       # - /vol2:/vol2
       # - /vol3:/vol3
+      - /vol1/1000/docker/resize-video-auto:/data
+      - /vol1/1000/video-split-in:/test-video
     logging:
       driver: json-file
       options:
