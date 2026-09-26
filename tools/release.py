@@ -12,6 +12,9 @@
        （复用 tools/deploy_nas.py，不经过 Docker Hub，适合日常改代码快速上线）。
     2. fpk 方式部署到局域网飞牛
        用 fnpack 构建 fpk 应用包 → 上传 NAS → appcenter-cli 安装/升级并启动。
+       ⚠️ fpk **不含源码**，装完真正跑的是 fnos/app/docker/docker-compose.yaml
+          里那个 image tag 指向的镜像。**tag 不换，重装多少次都还是旧版本**
+          （2026-09-26 就踩过：fpk 装完把刚部署好的新镜像盖回了旧 tag）。
     3. 生成新版本 / 版本号 / 版本说明，发布到 Docker Hub + GitHub Release
        提版本号 → 写版本说明 → 更新 manifest/config → tag →
        构建 fpk → GitHub Release → （*需要你确认*）推镜像到 Docker Hub。
@@ -44,6 +47,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import build_fpk as fpk_builder  # noqa: E402
 import ssh_run  # noqa: E402
 
 APP_NAME = "video-splitter"
@@ -52,9 +56,7 @@ DOCKER_HUB_USER = "mawing"
 GH_BIN = os.environ.get(
     "GH_BIN", r"C:/Program Files/GitHub CLI/gh.exe")
 GH_REPO = "hellomawing/resize-video-auto"
-# fnpack.exe 路径（默认在 fnpack 临时目录；可用 FNPACK_BIN 覆盖）
-FNPACK_BIN = os.environ.get("FNPACK_BIN",
-                            r"C:/Users/hello/AppData/Local/Temp/fnpack/fnpack.exe")
+# fnpack.exe 路径由 tools/build_fpk.py 负责（FNPACK_BIN 环境变量可覆盖）
 
 # NAS 上的 fpk 临时路径
 NAS_FPK = "/tmp/video-splitter-release.fpk"
@@ -209,18 +211,15 @@ def docker_deploy_to_nas():
 # ------------------------------------------------------------------ 2) fpk 部署
 
 def build_fpk() -> Path:
-    """用 fnpack 构建 fpk，返回产物路径。"""
-    if not Path(FNPACK_BIN).exists():
-        log("!! 找不到 fnpack：%s" % FNPACK_BIN)
-        log("   请先安装，或用 FNPACK_BIN 环境变量指定路径。")
-        return None
-    rc = run_proc([FNPACK_BIN, "build", "-d", "."], ROOT / "fnos")
-    fpk = ROOT / "fnos" / "video-splitter.fpk"
-    if rc != 0 or not fpk.exists():
-        log("!! fpk 构建失败。")
-        return None
-    log("✔ fpk 构建完成：%s（%.0f KB）" % (fpk, fpk.stat().st_size / 1024))
-    return fpk
+    """用 fnpack 构建 fpk，返回产物路径（失败返回 None）。
+
+    实现放在 tools/build_fpk.py —— 那边顺带做打包前的静态校验（必需文件、
+    JSON、LF 换行、镜像占位符），也可以单独在命令行跑：
+
+        python tools/build_fpk.py            # 打包
+        python tools/build_fpk.py --check    # 只校验
+    """
+    return fpk_builder.build()
 
 
 def fpk_deploy_to_nas():
@@ -230,6 +229,7 @@ def fpk_deploy_to_nas():
         return
 
     log("内网部署，选中即执行，不再二次确认。")
+    fpk_builder.hint_image()
     cli = ssh_run.connect()
     try:
         # 1) 上传 fpk 与安装向导 env
