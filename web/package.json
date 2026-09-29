@@ -1,0 +1,22 @@
+{
+  "name": "video-splitter-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "视频无损分割工具（NAS 版）网页控制台",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11",
+    "vue-tsc": "^2.0.13"
+  }
+}

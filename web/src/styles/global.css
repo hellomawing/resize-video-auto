@@ -1,0 +1,479 @@
+/* reset + 通用组件样式（按钮 / 输入 / 表格 / 卡片 / 徽章 / 对话框）。
+   组件内部只写布局相关样式，公共视觉一律复用这里的类。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: var(--font-size);
+  color: var(--color-text);
+  background: var(--color-bg);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+}
+
+/* ---------- 布局工具 ---------- */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.page-title {
+  font-size: var(--font-size-2xl);
+}
+.page-subtitle {
+  color: var(--color-text-soft);
+  font-size: var(--font-size-sm);
+  margin-top: var(--space-1);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.wrap {
+  flex-wrap: wrap;
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- 卡片 ---------- */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-5);
+}
+.card-title {
+  font-size: var(--font-size-lg);
+  margin-bottom: var(--space-4);
+}
+/* 卡片开头的整体说明：紧跟标题（抵消一点标题的下边距），与第一个字段留出正常间距 */
+.card-intro {
+  margin-top: calc(-1 * var(--space-2));
+  margin-bottom: var(--space-4);
+}
+
+/* ---------- 按钮 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  height: 36px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  white-space: nowrap;
+}
+.btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+.btn--primary:hover {
+  background: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+  color: #fff;
+}
+.btn--danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #fff;
+}
+.btn--danger:hover {
+  background: #8c2525;
+  border-color: #8c2525;
+  color: #fff;
+}
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-soft);
+}
+.btn--ghost:hover {
+  background: var(--color-muted-soft);
+  border-color: transparent;
+  color: var(--color-text);
+}
+.btn--sm {
+  height: 28px;
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+/* ---------- 输入 ---------- */
+.input,
+.select,
+.textarea {
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size);
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.textarea {
+  height: auto;
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+  line-height: 1.5;
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-soft);
+}
+.input:disabled {
+  background: var(--color-surface-2);
+  color: var(--color-text-faint);
+}
+/* 失焦后仍有未保存内容的输入框（设置页等）：红框盖过 focus 蓝框。
+   放在全局是因为 MarkSourcePicker 内部的归档目录输入框也用这个类 */
+.input--dirty,
+.input--dirty:focus {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 3px var(--color-danger-soft);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.field-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-soft);
+  font-weight: 500;
+}
+.field-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+  line-height: 1.6;
+}
+/* hint 正文是淡灰的，里面的 <strong> 原来只加粗、颜色照样继承淡灰，
+   等于标了重点却看不出来 —— 既然标了就得让人看见，所以给个更深的字色。 */
+.field-hint strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+/* 行内高亮：hint 里真正要让人停下来看一眼的那几个词（不可逆 / 会失联之类）。
+   克制使用 —— 满屏都高亮就等于没有高亮。 */
+.hl {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-weight: 500;
+}
+.hl--danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+/* 提示里需要被看见的那种：当前选项有副作用、或某项设置不会生效 */
+.field-hint--warn {
+  color: var(--color-warning);
+}
+.field-hint--danger {
+  color: var(--color-danger);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* ---------- 表单页：内容列限宽 + 两栏字段 ---------- */
+/* 「一行太长读着累」的根源是行宽（measure），不是屏幕有多宽。所以表单页做两件事：
+   ① 整列内容限宽；② 把标签挪到左侧，让控件与说明文字只占右列（约 596px ≈ 50 个汉字），
+   顺带把纵向长度也压下来。只给「设置 / 新增编辑」这类表单页加 .page--form ——
+   列表页的表格恰好相反，越宽越好读，别一起限。 */
+.page--form {
+  max-width: 840px;
+  --field-label-w: 180px;
+  /* 首行控件的常见高度：input / select / .tags 都是 36px。
+     标签照它垫高再内部居中，中线才跟控件对齐。 */
+  --field-lead-h: 36px;
+}
+/* 整段说明文字（卡片开头，以及不属于任何字段的 hint，如「配置备份与恢复」那块）
+   单独收一次行宽，不跟着卡片一路铺到右边缘 */
+.page--form .card-intro,
+.page--form .field-hint {
+  max-width: 700px;
+}
+.page--form .field {
+  display: grid;
+  grid-template-columns: var(--field-label-w) minmax(0, 1fr);
+  column-gap: var(--space-4);
+  row-gap: var(--space-2);
+  align-items: center;
+}
+/* 第一个孩子是标签，固定占左列；其余（控件 + 若干条 hint）依次堆在右列。
+   只指定列、行交给自动排列，就不必给每个控件加类。 */
+.page--form .field > :first-child {
+  grid-column: 1;
+  /* 贴着本行上沿，但在 --field-lead-h 高度内垂直居中：控件普遍 36px，
+     少数整块更高（如目录选择器的三步走），标签才不会飘到半空 */
+  align-self: start;
+  display: flex;
+  align-items: center;
+  min-height: var(--field-lead-h);
+}
+.page--form .field > :not(:first-child) {
+  grid-column: 2;
+}
+/* 窄到放不下两栏时退回竖排：右列只剩两三百像素，还不如堆着 */
+@media (max-width: 820px) {
+  .page--form .field {
+    grid-template-columns: minmax(0, 1fr);
+    column-gap: 0;
+  }
+  .page--form .field > :first-child,
+  .page--form .field > :not(:first-child) {
+    grid-column: 1;
+  }
+}
+
+/* ---------- 表格 ---------- */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+.data-table th {
+  text-align: left;
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-soft);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.data-table td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+.data-table tbody tr:hover {
+  background: var(--color-surface-2);
+}
+.data-table tbody tr.is-clickable {
+  cursor: pointer;
+}
+
+/* ---------- 徽章 ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ---------- 标签输入（tags） ---------- */
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  min-height: 36px;
+}
+.tags:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-soft);
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-dark);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+.tag button {
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+.tag-input {
+  border: none;
+  outline: none;
+  flex: 1;
+  min-width: 80px;
+  height: 24px;
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  background: transparent;
+}
+
+/* ---------- 对话框 ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 27, 35, 0.45);
+  z-index: 900;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+  overflow-y: auto;
+}
+.modal {
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 2 * var(--space-6));
+}
+.modal--wide {
+  max-width: 820px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+.modal-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+}
+.modal-close {
+  border: none;
+  background: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+.modal-close:hover {
+  color: var(--color-text);
+}
+.modal-body {
+  padding: var(--space-5);
+  overflow-y: auto;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ---------- 其它 ---------- */
+.muted {
+  color: var(--color-text-soft);
+}
+.faint {
+  color: var(--color-text-faint);
+}
+.text-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.help {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+  margin-top: var(--space-1);
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

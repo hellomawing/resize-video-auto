@@ -1,0 +1,62 @@
+# 部署编排（直接拉镜像，不需要源码和构建环境）
+#
+#   1. 复制 .env.example 为 .env，填好 PUID / PGID / 镜像名
+#   2. docker compose up -d
+#   3. 浏览器打开 http://主机IP:8099
+
+services:
+  video-splitter:
+    image: ${VS_IMAGE:-mawing/video-splitter:latest}
+    container_name: video-splitter
+    restart: unless-stopped
+    ports:
+      # ⚠️ 这个网页**没有登录鉴权** —— 端口发布到哪张网卡，那张网卡上的谁都能进来。
+      #    别把它转发到公网，也别在不可信的网段上开。
+      - "${VS_PORT:-8099}:8099"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 主机上的用户 id：SSH 里执行 `id 你的用户名`，取 uid 和 gid 两项。
+      # 注意 gid 常常不等于 uid。不填就按 root 跑，切片属主会是 root，
+      # 文件管理里不好改也不好删。
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1001}
+      UMASK: "022"
+      VS_LOG_LEVEL: info
+      # 访问密码（可选）：设了之后打开网页需要先登录，单个密码、无需用户名。
+      # 从 deploy/.env 读；留空/取消注释 = 无需密码。暴露到公网时务必配置。
+      VS_ACCESS_PASSWORD: ${VS_ACCESS_PASSWORD:-}
+    volumes:
+      # 全部状态（配置、监控目录列表、数据库、任务历史、失败清单）都在这个
+      # named volume 里。用它的理由：
+      #   * 你不用填路径、也不用知道它在哪 —— Docker 自己管；
+      #   * 容器重建、升级镜像、甚至删掉容器重建都不会丢（绑定挂载反而会因为
+      #     相对路径 / 挪目录而指向空目录，看起来就像数据没了）。
+      # 备份走「设置 → 导出配置」，或者整卷打包：
+      #   docker run --rm -v video-splitter-data:/data -v "$PWD":/backup \
+      #     alpine tar czf /backup/vs-data.tgz -C /data .
+      # - vsdata:/data
+      # 要处理的视频：挂进来的目录就是网页上能浏览、能添加监控的范围
+      # （没有额外的白名单要配）。
+      #
+      # **只挂你要处理的目录，不要挂整盘。** 这个网页默认没有登录鉴权，
+      # 挂整盘等于把整台机器的用户数据交出去。有几个目录就写几行，
+      # 容器内路径与宿主机保持一致最省心：
+      # - /vol1/1000/video-split-in:/vol1/1000/video-split-in
+      #
+      # 媒体目录与容器内路径由 VS_MEDIA_MOUNT 控制（可在部署机侧的
+      # deploy/.env 里改）。下面这一行是生效写法：把宿主机某一个目录挂成
+      # 容器内的 /test-video —— 网页上的监控目录就填容器内路径 /test-video。
+      # - "${VS_MEDIA_MOUNT:-/vol1/1000/video-split-in}:/test-video"
+      - /vol1/1000/docker/resize-video-auto:/data
+      - /vol1/1000/video-split-in:/test-video
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# 固定卷名（不加 compose 的项目名前缀），上面那条备份命令才认得出。
+# 注意：删卷要先 `docker compose down -v`，普通的 down 不会删。
+volumes:
+  vsdata:
+    name: video-splitter-data

@@ -1,0 +1,46 @@
+# 从源码构建并运行的 compose（开发 / 自建场景）
+#
+#   docker compose up -d --build
+#
+# 部署到生产用 deploy/docker-compose.yml（直接拉镜像，不需要构建环境）。
+
+services:
+  video-splitter:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: video-splitter:dev
+    container_name: video-splitter
+    restart: unless-stopped
+    ports:
+      # ⚠️ 这个网页**没有登录鉴权** —— 端口发布到哪张网卡，那张网卡上的谁都能进来。
+      #    强烈建议配置访问密码（下面 environment 里的 VS_ACCESS_PASSWORD），
+      #    特别是要暴露到公网的时候。
+      - "8099:8099"
+    environment:
+      TZ: Asia/Shanghai
+      # 改成你在主机上的用户 id（SSH 里执行 id 你的用户名 可以查到）。
+      # 保持 0 就是 root 运行，写出来的切片属主会是 root，文件管理里不好操作。
+      PUID: 1000
+      PGID: 1000
+      UMASK: "022"
+      VS_LOG_LEVEL: info
+      # 访问密码（可选）：设了之后打开网页需要先登录。
+      # 从部署方环境读：docker compose run --env 或在此处硬编码。
+      # 留空/省略 = 无需密码。
+      VS_ACCESS_PASSWORD: ${VS_ACCESS_PASSWORD:-}
+    volumes:
+      - ./data:/data
+      # **只挂你要处理的目录，不要挂整盘。** 挂进来的范围就是网页上能浏览、能改动的
+      # 范围，而这个网页默认没有登录鉴权（除非配置了 VS_ACCESS_PASSWORD）
+      # —— 挂 /vol1 等于把整台主机的用户数据交出去。
+      # 有几个目录就写几行；容器内路径与宿主机保持一致最省心。
+      # Windows / macOS 开发时换成自己的目录，例如：
+      # - D:/Videos:/vol1
+      - /vol1/1000/video-split-in:/vol1/1000/video-split-in
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/healthz', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 8s
+      start_period: 30s
+      retries: 3
