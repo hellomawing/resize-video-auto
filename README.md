@@ -31,7 +31,8 @@
 - **命令行版**：`cli/` 下另有一套独立工具（切割 + 撤销），可打包成**免安装
   Python 的单文件可执行程序**，Windows / macOS 双击即用；带 8 步交互式问答，
   选项与网页设置一一对应；支持把常用设置存成预设，跑完还会停住让你看完结果
-  再关窗。详见「[命令行版](#命令行版不用-docker也不用装-python)」。
+  再关窗。**[⬇ 直接下载](https://github.com/hellomawing/resize-video-auto/releases/latest)**，
+  详见「[命令行版](#命令行版不用-docker也不用装-python)」。
 
 ---
 
@@ -151,7 +152,7 @@ PUID / PGID / UMASK 则**不是必须**（默认 `0 /0 /022`，按 root 跑）�
 | 平台 | 下这个 |
 |------|--------|
 | Windows | `video_splitter-windows-x64.exe`、`undo_split-windows-x64.exe` |
-| macOS | `video_splitter-macos-arm64` / `-x86_64`（Apple 芯片 / Intel 各一份） |
+| macOS | `video_splitter-macos-arm64` / `-x86_64`（Apple 芯片 / Intel 各一份，需自己在 Mac 上打） |
 
 拷到任何一台同系统的电脑上双击就能跑，也可以把文件夹拖到它图标上（等价于命令行给路径）。
 `cli/run_splitter.bat`（Windows）/ `cli/run_splitter.command`（macOS）是两个启动器，
