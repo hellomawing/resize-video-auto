@@ -45,7 +45,10 @@ def login(payload: AuthLoginIn, response: Response) -> dict:
     response.set_cookie(
         key=auth.COOKIE_NAME,
         value=auth.issue_token(),
-        # 会话 cookie：关了浏览器就失效，不落盘
+        # 持久 cookie：带 Max-Age，关掉浏览器再打开仍然有效（12 小时内）。
+        # 显式写 path="/"：登录页、SPA 路由、/api/* 都要带得上，
+        # 别依赖框架的默认值（默认恰好也是 "/"，但写出来才不会哪天改坏）。
+        path="/",
         httponly=True,
         samesite="lax",
         max_age=auth.SESSION_TTL,
@@ -56,7 +59,8 @@ def login(payload: AuthLoginIn, response: Response) -> dict:
 @router.post("/logout", response_model=None)
 def logout(response: Response) -> dict:
     """登出：清掉会话 cookie。"""
-    response.delete_cookie(auth.COOKIE_NAME)
+    # path 必须与 set_cookie 时一致，否则删不掉（浏览器按「名字 + path + domain」匹配）
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
     return {"ok": True}
 
 
@@ -85,7 +89,7 @@ def change_password(payload: AuthPasswordIn, response: Response,
 
     # 改密后强制重新登录：清掉会话 cookie，前端据此跳回登录页。
     # 密码是访问凭据，更新后旧会话不应继续有效。
-    response.delete_cookie(auth.COOKIE_NAME)
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
     return _status(request)
 
 

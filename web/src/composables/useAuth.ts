@@ -38,11 +38,25 @@ export function useAuth() {
   async function doLogin(password: string): Promise<string | null> {
     try {
       await apiLogin(password)
-      state.value = 'authed'
-      return null
     } catch (e) {
       return e instanceof Error ? e.message : '登录失败'
     }
+    // 密码对 ≠ 会话真的存住了。cookie 被浏览器策略或反向代理丢掉时，
+    // 登录接口照样返回 200，前端若直接切到 authed，用户会先看到「已进入」，
+    // 直到下一次请求（最典型的就是刷新页面）才被判未登录 —— 现象就是
+    // 「明明登录成功，一刷新又要重新登录」，且当场看不出原因。
+    // 这里立刻回查一次状态，把这类问题在登录当口就说清楚。
+    try {
+      const res = await getAuthStatus()
+      if (res.enabled && !res.authed) {
+        return '登录成功但会话没能保存：请检查浏览器是否禁用了 Cookie，'
+          + '或反向代理是否丢掉了 Set-Cookie 响应头。'
+      }
+    } catch {
+      // 回查本身失败（网络抖动）不阻断登录，按登录成功处理
+    }
+    state.value = 'authed'
+    return null
   }
 
   /** 登出 */

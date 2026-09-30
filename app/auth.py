@@ -49,7 +49,9 @@ ENV_PASSWORD = "VS_ACCESS_PASSWORD"
 ACCESS_FILE = config.DATA_DIR / "access.json"
 # cookie 名
 COOKIE_NAME = "vs_session"
-# 会话有效期（秒）：一次登录，浏览器端 43200 秒（12 小时）不活动就失效
+# 会话有效期（秒）：登录后 12 小时内有效，之后要重新登录。
+# 注意是「从登录那一刻算起」的固定期限，不是「不操作就失效」的空闲超时——
+# 目前没有做续期，写这个注释时特意点明，免得按空闲超时去理解。
 SESSION_TTL = 43200
 
 # PBKDF2 参数：200k 次迭代，对 NAS 上的单机应用足够，不强求更高
@@ -233,25 +235,54 @@ def _token_version() -> int:
     return int(_load().get("pwVer", 0))
 
 
+def _b64e(raw: bytes) -> str:
+    """bytes → 无填充 base64url。字符集只有 A-Za-z0-9-_，天然不含分隔符。"""
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _b64d(text: str) -> bytes:
+    """无填充 base64url → bytes。非法字符直接报错，由调用方当作「token 无效」。"""
+    return base64.b64decode(text + "=" * (-len(text) % 4),
+                            altchars=b"-_", validate=True)
+
+
 def issue_token() -> str:
-    """签发一个带过期时间的签名 token（用于 cookie）。"""
+    """签发一个带过期时间的签名 token（用于 cookie）。
+
+    格式：base64url(载荷) + "." + base64url(签名)，载荷是「过期时间戳.密码版本号」。
+
+    为什么两段要各自 base64url，而不是「载荷 + 原始签名」直接拼：
+
+    HMAC-SHA256 摘要是 32 字节二进制，其中**每个字节有 1/256 的概率是 0x2E
+    （即 '.'）**，整段出现 '.' 的概率约 11.7%。早先的写法是
+    `base64(payload + b"." + sig)`，校验时用 `rpartition(b".")` 从最后一个点切开——
+    签名里一旦混进 '.'，切出来的「签名」就是残缺的，HMAC 比对必然失败。
+
+    这个 bug 的恶劣之处在于它**不表现为登录失败**：登录接口照样 200、cookie 照样
+    下发、前端也照样进入主界面，直到下一个请求（最典型的就是刷新页面）才被判未登录。
+    用户看到的现象就是「登录明明成功了，一刷新又要重新登录」，而且约 1/8 的概率命中，
+    时好时坏，极难复现。
+
+    两段都做 base64url 后，token 里除了那一个分隔用的 '.' 不再可能出现 '.'，
+    按第一个点切开永远不含糊。
+    """
     exp = int(time.time()) + SESSION_TTL
-    ver = _token_version()
-    payload = f"{exp}.{ver}".encode()
+    payload = f"{exp}.{_token_version()}".encode()
     sig = hmac.new(_secret(), payload, hashlib.sha256).digest()
-    token = base64.urlsafe_b64encode(payload + b"." + sig).decode().rstrip("=")
-    return token
+    return _b64e(payload) + "." + _b64e(sig)
 
 
 def verify_token(token: str | None) -> bool:
     """校验 token：签名正确、未过期，且密码版本号与当前一致（改密后旧会话失效）。"""
     if not token:
         return False
+    payload_b64, sep, sig_b64 = token.partition(".")
+    # 分隔符必须存在、两段都必须非空、签名段不能再含点号
+    if not sep or not payload_b64 or not sig_b64 or "." in sig_b64:
+        return False
     try:
-        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        # payload 里也含点号（过期时间.版本号），签名是无点号的 urlsafe base64，
-        # 所以从最后一个点断开、把最后一段当签名。
-        payload, _, sig = raw.rpartition(b".")
+        payload = _b64d(payload_b64)
+        sig = _b64d(sig_b64)
     except (ValueError, TypeError):
         return False
     expect = hmac.new(_secret(), payload, hashlib.sha256).digest()
