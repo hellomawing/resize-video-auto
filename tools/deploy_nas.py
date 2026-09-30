@@ -25,6 +25,15 @@ export 任何东西。该文件被 .gitignore 排除、只在本机存在，**�
     ⑥ docker compose up -d --force-recreate
     ⑦ 等健康检查通过，并打印版本信息
 
+探针为什么都不走鉴权接口：
+    本脚本拿不到网页访问密码（它在 NAS 本地的 deploy/.env 里），所以凡是要判断
+    「服务好不好」的地方一律用免鉴权端点：存活看 `/healthz`（容器自己的
+    HEALTHCHECK 也是它），密码状态看 `/api/auth/status`。**别改回 /api/health**——
+    配了访问密码之后它返回 401，会把健康的容器判成没起来；查任务更危险：
+    401 的响应体 `{"detail": ...}` 能被 json 解析成「没有 items」，于是「没查到」
+    被静默当成「没有任务在跑」，重建时正好把在跑的任务掐断。任务状态改成
+    `docker exec` 进容器用应用自己的 db 层查（见 check_running_jobs）。
+
 参数：
     --app NAME      项目名，默认 video-splitter
     --remote DIR    NAS 上的部署根目录，默认 /vol1/1000/video-splitter
@@ -115,24 +124,75 @@ def pack(dest_dir: Path) -> Path:
 
 # ------------------------------------------------------------------ 远端动作
 
-def check_running_jobs(cli, port: int):
-    """返回还在排队/运行的任务列表。远端接口不通时返回 None（不是错误）。"""
-    code, out, _ = ssh_run.run(
-        cli, "curl -s -m 5 http://127.0.0.1:%d/api/jobs?limit=50" % port)
+def http_code(cli, port: int, path: str, timeout: int = 5) -> str:
+    """只取 HTTP 状态码。"""
+    _, out, _ = ssh_run.run(
+        cli, "curl -s -m %d -o /dev/null -w '%%{http_code}' "
+             "http://127.0.0.1:%d%s" % (timeout, port, path))
+    return out.strip()
+
+
+def http_body(cli, port: int, path: str, timeout: int = 5) -> str:
+    """只取响应体。"""
+    _, out, _ = ssh_run.run(
+        cli, "curl -s -m %d http://127.0.0.1:%d%s" % (timeout, port, path))
+    return out
+
+
+#: 在容器里查任务状态的小程序。刻意复用应用自己的 db 层：不用把 jobs 表结构
+#: 在这边再抄一遍，将来加字段也不会两边不一致。
+#: 注意两点：list_jobs 返回的是 (总数, 列表)；整段代码里**不能出现单引号**，
+#: 它要被原样塞进 `python -c '...'`。
+_JOBS_PROBE = (
+    'import json;from app import db;'
+    'print(json.dumps([{"src": j["src"], "status": j["status"], '
+    '"progress": j["progress"]} '
+    'for j in db.list_jobs(status="queued,running", limit=100)[1]]))'
+)
+
+
+def check_running_jobs(cli, app: str):
+    """查容器里还在排队/运行的任务，返回 ``(jobs, note)``。
+
+    为什么**不走 HTTP 接口**：配了访问密码之后 ``/api/jobs`` 需要登录，而 401 的
+    响应体是 ``{"detail": "需要访问密码"}``——它照样能被 json 解析，
+    ``data.get("items")`` 得到 None，于是「没查到」被静默当成「没有任务在跑」。
+    重建容器时正好把在跑的任务掐断，这是这套检查最危险的错法。
+
+    改成直接问容器自己：docker exec 进去用应用自己的 db 层查。既不需要网页密码
+    （脚本本来也拿不到，密码在 NAS 本地的 deploy/.env 里），也不受鉴权开关影响。
+
+    返回：
+        jobs 是 list  → 查到了（可能是空的）
+        jobs 是 None  → 查不到，note 说明原因；调用方必须按「未知」处理，
+                        不能当成「没有任务」
+    """
+    _, ps_out, _ = ssh_run.run(
+        cli, "docker ps --filter name=^/%s$ --format '{{.Names}}'" % app)
+    if app not in ps_out:
+        # 容器都没在跑，自然不可能有任务在跑
+        return [], "容器没在运行"
+
+    code, out, err = ssh_run.run(
+        cli, "docker exec %s python -c '%s'" % (app, _JOBS_PROBE))
     if code != 0 or not out.strip():
-        return None
+        return None, (err.strip() or out.strip() or "docker exec 没有输出")[:200]
     try:
-        data = json.loads(out)
+        jobs = json.loads(out)
     except Exception:
-        return None
-    items = data.get("items") or []
-    return [j for j in items if j.get("status") in ("queued", "running")]
+        return None, "返回值不是 JSON：%s" % out.strip()[:120]
+    if not isinstance(jobs, list):
+        return None, "返回值不是列表"
+    return jobs, ""
 
 
-def wait_jobs_done(cli, port: int, seconds: int) -> bool:
+def wait_jobs_done(cli, app: str, seconds: int) -> bool:
     deadline = time.time() + seconds
     while time.time() < deadline:
-        jobs = check_running_jobs(cli, port)
+        jobs, note = check_running_jobs(cli, app)
+        if jobs is None:
+            log("    查不到任务状态（%s），不再等" % note)
+            return False
         if not jobs:
             return True
         j = jobs[0]
@@ -222,17 +282,20 @@ def sync_deploy_compose(cli, remote: str) -> bool:
 
 def wait_healthy(cli, app: str, port: int, timeout: int = 120):
     """等容器 healthy + 接口能应答。entrypoint 要跑挂载自检 + gosu 降权，
-    起来后 10~15 秒才算稳。"""
+    起来后 10~15 秒才算稳。
+
+    探针用 **/healthz**，不是 /api/health：后者一旦配了访问密码就需要登录，
+    而脚本拿不到那个密码（它在 NAS 本地的 deploy/.env 里），只会一直收到 401，
+    于是容器明明健康也被判成「没起来」。/healthz 是刻意留的免鉴权探针，
+    容器自己的 HEALTHCHECK 用的也是它，两边口径一致。
+    """
     deadline = time.time() + timeout
     status = ""
     while time.time() < deadline:
         _, out, _ = ssh_run.run(
             cli, "docker ps --filter name=^/%s$ --format '{{.Status}}'" % app)
         status = out.strip()
-        _, code_out, _ = ssh_run.run(
-            cli, "curl -s -m 5 -o /dev/null -w '%%{http_code}' "
-                 "http://127.0.0.1:%d/api/health" % port)
-        if "healthy" in status and code_out.strip() == "200":
+        if "healthy" in status and http_code(cli, port, "/healthz") == "200":
             return status
         time.sleep(4)
     return None
@@ -257,7 +320,7 @@ def main() -> int:
     ap.add_argument("--wait", type=int, default=0, metavar="N",
                     help="有任务在跑时最多等 N 秒")
     ap.add_argument("--force", action="store_true",
-                    help="不管有没有任务在跑，直接重建")
+                    help="不管有没有任务在跑（或查不到任务状态）都直接重建")
     ap.add_argument("--dry-run", action="store_true",
                     help="只打包并打印要执行的命令，不改动 NAS")
     args = ap.parse_args()
@@ -342,9 +405,16 @@ def main() -> int:
 
         if not args.skip_build:
             step(3, "检查有没有正在跑的任务")
-            jobs = check_running_jobs(cli, args.port)
+            jobs, note = check_running_jobs(cli, app)
             if jobs is None:
-                log("  接口没应答，跳过检查（容器可能是停的，这不影响部署）")
+                # 查不到 ≠ 没有。宁可停下来问一句，也别默默把在跑的任务掐断。
+                log("  [警告] 查不到任务状态：%s" % note)
+                log("  为了不误杀在跑的任务，这里不自动继续。确认没任务在跑后加 --force。")
+                if not args.force:
+                    log("\n已停在解包之后、构建之前。NAS 上的源码是新的，"
+                        "容器还是旧的，重跑本脚本会继续。")
+                    return 1
+                log("  （--force：继续）")
             elif jobs:
                 log("  有 %d 个任务还在排队/运行：" % len(jobs))
                 for j in jobs[:5]:
@@ -356,7 +426,7 @@ def main() -> int:
                 log("  确定要立刻重建，加 --force。")
                 if args.force:
                     log("  （--force：继续）")
-                elif args.wait and wait_jobs_done(cli, args.port, args.wait):
+                elif args.wait and wait_jobs_done(cli, app, args.wait):
                     log("  任务都跑完了，继续")
                 else:
                     log("\n已停在解包之后、构建之前。NAS 上的源码是新的，"
@@ -386,15 +456,35 @@ def main() -> int:
         log("  容器 %s" % status)
 
         step(7, "验证")
-        _, ver, _ = ssh_run.run(
-            cli, "curl -s -m 5 http://127.0.0.1:%d/api/health" % args.port)
+        # 存活判断只认免鉴权的 /healthz（和容器自己的 HEALTHCHECK 同一个口径）
+        code = http_code(cli, args.port, "/healthz")
+        if code != "200":
+            log("  [失败] /healthz 返回 %s，服务没真正起来" % code)
+            return 1
+        log("  /healthz 200")
+
+        # /api/auth/status 也是免鉴权端点，正好用来判断这台机器配没配访问密码
+        enabled = False
         try:
-            health = json.loads(ver)
+            enabled = bool(json.loads(
+                http_body(cli, args.port, "/api/auth/status")).get("enabled"))
+        except Exception:
+            pass
+        log("  访问密码：%s" % ("已启用" if enabled else "未启用"))
+
+        # 版本 / Python / ffmpeg 在 /api/health 里，而它受访问密码保护：
+        # 配了密码就拿不到，这不是故障——存活判断上面已经做完了。
+        try:
+            health = json.loads(http_body(cli, args.port, "/api/health"))
+        except Exception:
+            health = {}
+        if health.get("version"):
             log("  版本 %s ｜ Python %s ｜ ffmpeg %s"
                 % (health.get("version"), health.get("python"),
                    (health.get("ffmpeg") or {}).get("version", "")[:40]))
-        except Exception:
-            log("  " + ver.strip()[:200])
+        else:
+            log("  版本 %s ｜（/api/health 需要登录，Python / ffmpeg 详情到网页「概览」看）"
+                % app_version())
 
         host, port, _, _ = ssh_run.cfg()
         log("\n完成。控制台： http://%s:%d" % (host, args.port))
