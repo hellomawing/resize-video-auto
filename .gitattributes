@@ -9,6 +9,8 @@
 docker/entrypoint.sh text eol=lf
 cli/*.command       text eol=lf
 cli/*.py            text eol=lf
+# 打包用的自定义 PyInstaller hook 也在子目录里，同样要 LF
+cli/**/*.py         text eol=lf
 
 # Windows 批处理必须 CRLF
 *.bat               text eol=crlf

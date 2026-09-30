@@ -6,7 +6,14 @@ undo_split.py —— 撤销 video_splitter.py 的分割动作（Windows / macOS 
 作用：
     把一次分割「完整回退」——
       1. 删掉分割产生的切片（原名#1、原名#2 ...）
-      2. 把原片 原名#origin.扩展名 改回原本的 原名.扩展名
+      2. 把原片恢复到正常位置
+
+    原片的两种归档形式都能回退，对应 video_splitter.py 的 --mark-source：
+
+      * rename（默认）.../原名#origin.ext   ->  .../原名.ext（原地改名）
+      * move          .../归档目录/原名.ext  ->  .../原名.ext（搬回上一级）
+                       归档目录默认叫 resize-video-origin-file/，
+                       历史版本叫 origin/，两个名字都认。
 
     只处理「切片 + 原片」齐全的一组文件；原片缺失的孤儿切片不会动，
     避免误删。
@@ -22,13 +29,14 @@ undo_split.py —— 撤销 video_splitter.py 的分割动作（Windows / macOS 
           各切片时长之和 ≈ 原片时长才放行，能证明时间轴上没有内容缺失。
       需要 ffprobe 才能做时长核对；找不到 ffprobe 时 copy 模式的切片
       会被保守地跳过不删。
-    * 原片改回原名时，如果目标名已被占用，会跳过并报告，绝不覆盖。
+    * 原片恢复到目标位置时，如果目标名已被占用，会跳过并报告，绝不覆盖。
 
 用法：
     python undo_split.py "C:\\Users\\me\\Desktop\\DJI_001"            # 预览
     python undo_split.py "C:\\Users\\me\\Desktop\\DJI_001" --yes      # 执行
     python undo_split.py <目录> --keep-origin                            # 只校验，保留原片名
     python undo_split.py <目录> --trash                                  # 切片移入回收站而非直接删除
+    python undo_split.py <目录> --source-dir 我的归档目录                 # 自定义归档目录名
 """
 
 from __future__ import annotations
@@ -46,9 +54,23 @@ from pathlib import Path
 IS_WINDOWS = os.name == "nt"
 IS_MAC = platform.system() == "Darwin"
 
+# 脚本自身所在目录。打包成可执行文件后（PyInstaller onefile）__file__ 指向
+# 运行时解压出来的临时目录，每次启动都是新的一份；要找「可执行文件旁边那份
+# 自带的 ffmpeg」必须用 sys.executable 所在目录。
+if getattr(sys, "frozen", False):
+    SCRIPT_DIR = Path(sys.executable).resolve().parent
+else:
+    SCRIPT_DIR = Path(__file__).resolve().parent
+
 # 与 video_splitter.py 保持一致
 SLICE_RE = re.compile(r"^(?P<base>.+)#(?P<idx>\d+)$")
 ORIGIN_SUFFIX = "#origin"
+
+# --mark-source move 用的归档目录名。历史版本叫 origin/，现在叫
+# resize-video-origin-file/。两套名字都要认，否则老用户的归档原片会被当成
+# 「陌生文件」而回退不了。改这里要跟 video_splitter.py 一起改。
+DEFAULT_SOURCE_DIR = "resize-video-origin-file"
+LEGACY_SOURCE_DIRS = ("origin",)
 
 VIDEO_EXTS = (
     ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv",
@@ -57,14 +79,17 @@ VIDEO_EXTS = (
 
 
 def init_console() -> None:
-    """让 Windows 控制台也能正常显示中文。"""
+    """让 Windows 控制台也能正常显示中文。
+
+    三个流都要管，包括 stdin —— 见 video_splitter.init_console 的说明。
+    """
     if IS_WINDOWS:
         try:
             ctypes.windll.kernel32.SetConsoleOutputCP(65001)
             ctypes.windll.kernel32.SetConsoleCP(65001)
         except Exception:
             pass
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
             if getattr(stream, "encoding", None) and \
                     stream.encoding.lower().replace("-", "") not in ("utf8", "utf_8"):
@@ -105,7 +130,7 @@ def find_bin(name: str):
     found = shutil.which(exe) or shutil.which(name)
     if found:
         return found
-    here = Path(__file__).resolve().parent
+    here = SCRIPT_DIR
     cands = [here / "ffmpeg" / "bin" / exe, here / "ffmpeg" / "bin" / name]
     if IS_WINDOWS:
         local = Path(os.environ.get("LOCALAPPDATA", ""))
@@ -165,12 +190,18 @@ def verify_deletable(origin: Path, parts, size: int, total: int, ffprobe) -> dic
       「各切片字节之和 == 原片字节数」必须严格成立，差一个字节都不行。
       这是最强的证明，直接放行。
 
-    * copy（ffmpeg 流拷贝）：按关键帧重新封装，mp4 装不下的流（大疆的
-      djmd / dbgi / tmcd 遥测流、mjpeg 缩略图）会被跳过，所以
-      「切片之和 < 原片大小」是正常现象，字节校验必然失败。
-      这种情况改用时长核对：只要各切片时长之和 ≈ 原片时长，
-      就说明时间轴上没有任何一段内容被漏掉。
-      切点落在关键帧上会让每段略微变长，所以总和允许比原片长一点。
+    * copy（ffmpeg 流拷贝）：按关键帧重新封装，字节数跟原片对不上，
+      这是必然的，原因有两个方向：
+
+        - 变小：mp4 装不下的流（大疆的 djmd / dbgi / tmcd 遥测流、
+          mjpeg 缩略图）被跳过，所以「切片之和 < 原片大小」很常见；
+        - 变大：每一段都要带自己的容器头（ftyp/moov/mdat），小文件切
+          很多段时，这些开销加起来能超过原片本身。所以「切片之和 >
+          原片大小」同样是正常的，**不能据此判定有问题**。
+
+      两种情况都改用时长核对：只要各切片时长之和 ≈ 原片时长，就说明
+      时间轴上没有任何一段内容被漏掉。切点落在关键帧上会让每段略微变长，
+      所以总和允许比原片长一点。
     """
     res = {"ok": False, "mode": "?", "reason": "", "d_origin": 0.0,
            "d_parts": [], "d_sum": 0.0, "checked": False}
@@ -180,13 +211,8 @@ def verify_deletable(origin: Path, parts, size: int, total: int, ffprobe) -> dic
                    reason="切片字节之和与原片完全一致（纯字节切割）")
         return res
 
-    if total > size:
-        res["reason"] = ("切片合计 %s 反而大于原片 %s，不正常"
-                         % (human_size(total), human_size(size)))
-        return res
-
     if not ffprobe:
-        res["reason"] = ("切片合计 %s 小于原片 %s（像是流拷贝产物），"
+        res["reason"] = ("切片合计 %s，与原片 %s 不一致（像是流拷贝产物），"
                          "但找不到 ffprobe，无法核对时长，不能确认完整"
                          % (human_size(total), human_size(size)))
         return res
@@ -217,11 +243,14 @@ def verify_deletable(origin: Path, parts, size: int, total: int, ffprobe) -> dic
 
 # ---------------------------------------------------------------- 扫描
 
-def scan_groups(folder: Path, recursive: bool, source_dir: str, ffprobe=None):
+def scan_groups(folder: Path, recursive: bool, source_dirs, ffprobe=None):
     """
     找出所有「切片 + 原片」组合，返回 (groups, orphans)。
 
+    source_dirs : 归档目录名集合（--source-dir 指定的名字 + 历史遗留名字）
+
     groups  : [{"base": 原文件名主干, "suffix": 扩展名, "origin": Path,
+                "origin_archived": 原片是否在归档目录里（True 时撤销要搬回上一级）,
                 "slices": [Path...], "size": 原片字节数, "sum": 切片合计,
                 "mode": "bytes"|"copy"|"?", "ok": 是否可安全删除,
                 "reason": 判定依据或失败原因,
@@ -229,6 +258,9 @@ def scan_groups(folder: Path, recursive: bool, source_dir: str, ffprobe=None):
     orphans : 有切片但找不到原片的文件列表
     """
     base_iter = folder.rglob("*") if recursive else folder.glob("*")
+    if isinstance(source_dirs, str):
+        source_dirs = (source_dirs,)
+    source_dirs = set(source_dirs)
     files = []
     for p in base_iter:
         try:
@@ -238,7 +270,7 @@ def scan_groups(folder: Path, recursive: bool, source_dir: str, ffprobe=None):
             continue
 
     # 目录形式归档（--mark-source move）也算原片
-    originals = {}          # (base, suffix) -> Path
+    originals = {}          # (base, suffix) -> (Path, 是否在归档目录里)
     slices = {}             # (base, suffix) -> [(idx, Path)]
 
     for p in files:
@@ -249,13 +281,14 @@ def scan_groups(folder: Path, recursive: bool, source_dir: str, ffprobe=None):
         # 1) 同目录改名形式：原名#origin.ext
         if stem.endswith(ORIGIN_SUFFIX):
             key = (stem[: -len(ORIGIN_SUFFIX)], suffix)
-            originals.setdefault(key, p)
+            originals.setdefault(key, (p, False))
             continue
 
-        # 2) 归档目录形式：origin/原名.ext
-        if p.parent.name == source_dir:
+        # 2) 归档目录形式：origin/原名.ext 或 resize-video-origin-file/原名.ext
+        #    这种原片还叫原名，撤销时要把它从归档目录搬回上一级
+        if p.parent.name in source_dirs:
             key = (stem, suffix)
-            originals.setdefault(key, p)
+            originals.setdefault(key, (p, True))
             continue
 
         # 3) 切片：原名#数字.ext
@@ -268,10 +301,11 @@ def scan_groups(folder: Path, recursive: bool, source_dir: str, ffprobe=None):
     for key, parts in sorted(slices.items()):
         base, suffix = key
         parts = [p for _, p in sorted(parts, key=lambda x: x[0])]
-        origin = originals.get(key)
-        if origin is None:
+        hit = originals.get(key)
+        if hit is None:
             orphans.extend(parts)
             continue
+        origin, archived = hit
         size = origin.stat().st_size
         total = sum(p.stat().st_size for p in parts)
         verdict = verify_deletable(origin, parts, size, total, ffprobe)
@@ -279,6 +313,7 @@ def scan_groups(folder: Path, recursive: bool, source_dir: str, ffprobe=None):
             "base": base,
             "suffix": suffix,
             "origin": origin,
+            "origin_archived": archived,
             "slices": parts,
             "size": size,
             "sum": total,
@@ -353,19 +388,55 @@ def delete_file(path: Path, use_trash: bool) -> None:
     path.unlink()
 
 
-def restore_origin(group) -> str:
-    """把 原名#origin.扩展名 改回 原名.扩展名，返回结果描述。"""
+def restore_target(group) -> Path:
+    """
+    算出原片「恢复后应该待在哪」。两种归档形式落点不同：
+
+      * 同目录改名  .../DJI_001#origin.mp4 -> .../DJI_001.mp4（原地改名）
+      * 归档目录    .../origin/DJI_001.mp4 -> .../DJI_001.mp4（搬回上一级）
+
+    归档目录形式原片本来就叫原名，只有搬回上一级才真正算「恢复」；
+    如果只做原地改名，文件会一直卡在 origin/ 里出不来。
+    """
     origin = group["origin"]
-    target = origin.with_name(group["base"] + group["suffix"])
+    name = group["base"] + group["suffix"]
+    if group.get("origin_archived"):
+        return origin.parent.parent / name
+    return origin.with_name(name)
+
+
+def describe_restore_target(group) -> str:
+    """给预览用：描述原片会落到哪里，让人一眼看懂是改名还是搬目录。"""
+    name = group["base"] + group["suffix"]
+    if group.get("origin_archived"):
+        return "%s（从 %s/ 搬回上一级）" % (name, group["origin"].parent.name)
+    return name
+
+
+def restore_origin(group) -> str:
+    """把原片恢复到正常位置，返回结果描述。"""
+    origin = group["origin"]
+    target = restore_target(group)
     if origin == target:
         return "原片本就在原名位置"
     if target.exists():
-        return "原片未改名：%s 已存在，请手工确认" % target.name
+        return "原片未恢复：%s 已存在，请手工确认" % target
     try:
         origin.rename(target)
     except OSError as exc:
-        return "原片改名失败（%s）" % exc
+        return "原片恢复失败（%s）" % exc
+    if group.get("origin_archived"):
+        return "原片已搬回 %s" % target.name
     return "原片已恢复为 %s" % target.name
+
+
+def classify_restore(result: str):
+    """把 restore_origin 的返回文案归类成 (是否真的恢复了, 是否出了问题)。"""
+    if result.startswith("原片已恢复") or result.startswith("原片已搬回"):
+        return True, False
+    if result == "原片本就在原名位置":
+        return False, False
+    return False, True
 
 
 # ---------------------------------------------------------------- 主流程
@@ -380,6 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
   python undo_split.py D:\\Videos --yes     # 确认无误后真正执行
   python undo_split.py D:\\Videos --trash --yes   # 切片进回收站而不是直接删
   python undo_split.py D:\\Videos --keep-origin   # 只校验不删，看看对不对得上
+  python undo_split.py D:\\Videos --source-dir 归档   # 归档目录名是自定义的
 """)
     p.add_argument("folders", nargs="*", help="要处理的文件夹（可多个）")
     p.add_argument("--yes", action="store_true",
@@ -392,8 +464,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="不删切片（只把 #origin 改回原名）")
     p.add_argument("--no-recursive", action="store_true",
                    help="只处理顶层目录，不进子目录")
-    p.add_argument("--source-dir", default="origin",
-                   help="--mark-source move 时用的归档文件夹名，默认 origin")
+    p.add_argument("--source-dir", default=DEFAULT_SOURCE_DIR,
+                   help="--mark-source move 时用的归档文件夹名，默认 %s"
+                        "（历史遗留的 %s 也会一并识别）"
+                        % (DEFAULT_SOURCE_DIR, "、".join(LEGACY_SOURCE_DIRS)))
     return p
 
 
@@ -432,7 +506,8 @@ def main(argv=None) -> int:
             continue
 
         groups, orphans = scan_groups(folder, not args.no_recursive,
-                                      args.source_dir, ffprobe)
+                                      (args.source_dir,) + tuple(LEGACY_SOURCE_DIRS),
+                                      ffprobe)
         if not groups and not orphans:
             log("")
             log("[%s] 没有发现「切片 + 原片」组合。" % folder)
@@ -468,14 +543,15 @@ def main(argv=None) -> int:
                 if not args.keep_origin:
                     if apply_changes:
                         result = restore_origin(g)
-                        log("  %s（本次只恢复文件名，未删任何切片）" % result)
-                        if result.startswith("原片已恢复"):
+                        log("  %s（本次只恢复原片，未删任何切片）" % result)
+                        done, bad = classify_restore(result)
+                        if done:
                             restored += 1
-                        elif "未改名" in result or "失败" in result:
+                        if bad:
                             problems.append("%s %s" % (g["base"], result))
                     else:
-                        log("  （预览）原片将改回 %s（切片保留）"
-                            % (g["base"] + g["suffix"]))
+                        log("  （预览）原片将恢复到 %s（切片保留）"
+                            % describe_restore_target(g))
                 continue
 
             total_ok += 1
@@ -487,7 +563,7 @@ def main(argv=None) -> int:
                         % (len(g["slices"]),
                            human_size(sum(p.stat().st_size for p in g["slices"]))))
                 if not args.keep_origin:
-                    log("  （预览）原片将改回 %s%s" % (g["base"], g["suffix"]))
+                    log("  （预览）原片将恢复到 %s" % describe_restore_target(g))
                 continue
 
             if not args.keep_slices:
@@ -509,15 +585,16 @@ def main(argv=None) -> int:
                 if failed:
                     log("  ！部分切片删除失败：%s" % "、".join(failed))
                     problems.append("%s 切片删除失败" % g["base"])
-                    log("  ！原片保持 #origin 不动，等你处理完再回退。")
+                    log("  ！原片保持不动，等你处理完再回退。")
                     continue
 
             if not args.keep_origin:
                 result = restore_origin(g)
                 log("  %s" % result)
-                if result.startswith("原片已恢复"):
+                done, bad = classify_restore(result)
+                if done:
                     restored += 1
-                elif "未改名" in result or "失败" in result:
+                if bad:
                     problems.append("%s %s" % (g["base"], result))
 
         if orphans:

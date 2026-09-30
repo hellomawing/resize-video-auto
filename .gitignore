@@ -15,6 +15,25 @@ __pycache__/
 venv/
 env/
 
+# ---------------------------------------------------------------- CLI 打包产物
+# cli/build_exe.py 的输出：dist/ 是可执行文件，build/ 是中间文件。
+# 两边都体积不小、且能在任意平台重新生成，所以不进仓库。
+# 想发布就去 GitHub Release 挂附件，别直接提交二进制。
+cli/dist/
+cli/build/
+*.spec
+
+# PyInstaller 的临时分析缓存（--clean 时删的就是它）
+cli/__pyinstaller/
+build/pyinstaller/
+pyinstaller-cache/
+
+# 脚本运行时自己产生的文件，属于本机状态，不进仓库：
+#   运行日志、自动下载的 ffmpeg、向导保存的预设
+cli/video_splitter_log.txt
+cli/ffmpeg/
+cli/presets.json
+
 # ---------------------------------------------------------------- 前端
 node_modules/
 web/dist/

@@ -1,0 +1,7 @@
+# cli 打包用的构建期依赖 —— 只有「把脚本打成免安装可执行文件」才需要。
+# 运行服务（Docker / 本地开发）不需要它，所以刻意不放进项目根的 requirements.txt。
+#
+#   python -m pip install -r cli/build-requirements.txt
+#   python cli/build_exe.py
+
+pyinstaller>=6.10
